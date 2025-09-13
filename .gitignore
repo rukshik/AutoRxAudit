@@ -1,0 +1,9 @@
+.venv
+__pycache__/
+backend/src/models/artifacts/
+.env
+node_modules/
+cache/
+coverage/
+dist/
+
