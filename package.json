@@ -1,0 +1,24 @@
+{
+  "name": "autorxaudit",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rukshik/AutoRxAudit.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/rukshik/AutoRxAudit/issues"
+  },
+  "homepage": "https://github.com/rukshik/AutoRxAudit#readme",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.0",
+    "hardhat": "^3.0.7"
+  }
+}

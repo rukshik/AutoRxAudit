@@ -54,7 +54,7 @@ def main():
                 f"Warning: Target '{target}' has only {min_class_count} samples in minority class."
             )
             print("Skipping this target due to insufficient data for modeling.")
-            continue
+            continuenpm install -g ganache-cli
 
         clf = setup(
             data=modeling_df,

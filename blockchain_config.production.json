@@ -1,0 +1,21 @@
+{
+    "networks": {
+        "mainnet": {
+            "provider": "https://mainnet.infura.io/v3/YOUR-PROJECT-ID",
+            "chain_id": 1
+        },
+        "sepolia": {
+            "provider": "https://sepolia.infura.io/v3/YOUR-PROJECT-ID",
+            "chain_id": 11155111
+        },
+        "goerli": {
+            "provider": "https://goerli.infura.io/v3/YOUR-PROJECT-ID",
+            "chain_id": 5
+        }
+    },
+    "active_network": "sepolia",
+    "contract_address": "DEPLOYED_CONTRACT_ADDRESS",
+    "gas_price_strategy": "medium",
+    "retry_count": 3,
+    "confirmation_blocks": 2
+}

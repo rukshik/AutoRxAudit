@@ -1,0 +1,172 @@
+Ganache CLI v6.12.2 (ganache-core: 2.13.2)
+
+Available Accounts
+==================
+(0) 0x8f179bCC550CF3AA7129718F71A25859010893Fb (100 ETH)
+(1) 0x42cD6cb4d6Caacf6e7ddF8797aE94E88507617Ee (100 ETH)
+(2) 0x219c382D742C4f75ebeBD2cBef4e1D32dbFFF99A (100 ETH)
+(3) 0x93c5f0293CeD1B07d33D7DaA5367D5D0DDD58E8c (100 ETH)
+(4) 0xe55Fcdc268bAE7599079a7dA7e9761f7cfF7d9EA (100 ETH)
+(5) 0x40d4013776b07294067206C8D4cC54861F27BD32 (100 ETH)
+(6) 0x1D7aEE9568aA1413A8BCC117d2fAd5A0AdE910Ee (100 ETH)
+(7) 0xebecEEDe113D7d008Ba7566AA39eBbd4d8963Fe7 (100 ETH)
+(8) 0x27af11c454Cb9a00f129D0a20051c96d5406f108 (100 ETH)
+(9) 0x541E4ea9647CDA8D56D1758472aEB9BB04d949bE (100 ETH)
+
+Private Keys
+==================
+(0) 0x16dd04397777007d3991b29dfe84938d3c77408b22e37c6f35b3351ab1d0054f
+(1) 0x9d5c7406b941778f78b2afd0e596b854d26814d8b43f03ad6d841ec1557ec46e
+(2) 0xf6c31fe465d6d464da4a4ae0d4eb6d48949af731858bb68cd757647625bbd33b
+(3) 0x673782c58696ccee50fe113092775af31a09a016ee6678d1f16a40fb012b82db
+(4) 0x0173ad0c04e72791ca4f4bb0c50771b300d93b06c82727cadafe8e0cea7a5425
+(5) 0x2ea7e7f11a6fc68bcd27a9fc668307908c203c967a64ea753028de06743a0d1b
+(6) 0xd49679cd8ecefa83a101379874d64a7b9d35628fd1ec999eef78e5f497e67f2d
+(7) 0x90eb14877be53077258d7a85e13ae30436d1509f91ba8c1c7b5588e77dc29369
+(8) 0x513a1c010d64b634c7463e2c2f6b4fc74dffc09c9bfdba96e08c2e3e329799ba
+(9) 0x91c79b827e0714dcf38ed003189475386f5fa617b6ef66e7b36fc8a097281418
+
+HD Wallet
+==================
+Mnemonic:      depart next siege night bulb topple furnace mesh topple primary city jewel
+Base HD Path:  m/44'/60'/0'/0/{account_index}
+
+Gas Price
+==================
+20000000000
+
+Gas Limit
+==================
+6721975
+
+Call Gas Limit
+==================
+9007199254740991
+
+Listening on 0.0.0.0:8546
+web3_clientVersion
+eth_accounts
+web3_clientVersion
+eth_accounts
+web3_clientVersion
+eth_accounts
+web3_clientVersion
+eth_accounts
+web3_clientVersion
+eth_accounts
+eth_getBlockByNumber
+eth_chainId
+eth_chainId
+eth_estimateGas
+eth_blockNumber
+eth_getBlockByNumber
+eth_sendTransaction
+
+  Transaction: 0xb1910b7561d3b633c30669e24d18ffcae32df5c7facc23d3aca7d49fb9cbfcb6
+  Contract created: 0x5a14496fdf7b9495970c6e022ab93c71c4e79a7f
+  Gas usage: 1726677
+  Block Number: 1
+  Block Time: Mon Oct 13 2025 23:35:19 GMT-0400 (Eastern Daylight Time)
+
+eth_getTransactionReceipt
+web3_clientVersion
+web3_clientVersion
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_sendRawTransaction
+eth_accounts
+eth_accounts
+eth_accounts
+web3_clientVersion
+web3_clientVersion
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_getBlockByNumber
+eth_chainId
+eth_sendTransaction
+
+  Transaction: 0x5a81594adb0ad75325d263f69dcec58d35040af3ae3ecd757389aeafeaff3e92
+  Gas usage: 200000
+  Block Number: 2
+  Block Time: Tue Oct 14 2025 08:57:32 GMT-0400 (Eastern Daylight Time)
+  Runtime Error: out of gas
+
+eth_accounts
+web3_clientVersion
+web3_clientVersion
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_getBlockByNumber
+eth_chainId
+eth_sendTransaction
+
+  Transaction: 0x4e286cd3c17976bd6352b6de76264e82f5fea79ecf190d8ff5304a714e14efdf
+  Gas usage: 480922
+  Block Number: 3
+  Block Time: Tue Oct 14 2025 08:58:04 GMT-0400 (Eastern Daylight Time)
+
+eth_getTransactionReceipt
+eth_chainId
+eth_call
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_chainId
+eth_call
+eth_chainId
+eth_call
+eth_chainId
+eth_call
+eth_accounts
+web3_clientVersion
+web3_clientVersion
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_getBlockByNumber
+eth_chainId
+eth_sendTransaction
+
+  Transaction: 0x12db8d6d57580eb86a4ecf24a61a169d014bf444faf7538e68656cc9496d25ba
+  Gas usage: 420922
+  Block Number: 4
+  Block Time: Tue Oct 14 2025 18:00:38 GMT-0400 (Eastern Daylight Time)
+
+eth_getTransactionReceipt
+eth_chainId
+eth_call
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_getBlockByNumber
+eth_chainId
+eth_sendTransaction
+
+  Transaction: 0xfefbe1ddbc2d8cb46b1fa2f181a4cb42ce0f7c4cee0f0df81b078f274599612b
+  Gas usage: 142838
+  Block Number: 5
+  Block Time: Tue Oct 14 2025 18:00:38 GMT-0400 (Eastern Daylight Time)
+
+eth_getTransactionReceipt
+eth_chainId
+eth_call
+eth_chainId
+eth_call
+eth_gasPrice
+eth_getTransactionCount
+eth_chainId
+eth_getBlockByNumber
+eth_chainId
+eth_sendTransaction
+
+  Transaction: 0xd9965712cf653e30829817badcec0e9cd9154eff2a56ceca4984a3ecbc9d4554
+  Gas usage: 29430
+  Block Number: 6
+  Block Time: Tue Oct 14 2025 18:00:38 GMT-0400 (Eastern Daylight Time)
+
+eth_getTransactionReceipt
+eth_chainId
+eth_call
