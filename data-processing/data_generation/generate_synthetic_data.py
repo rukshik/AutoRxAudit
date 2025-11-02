@@ -1,6 +1,6 @@
 """
 Synthetic Data Generator for MIMIC-IV Demo Expansion
-Expands the 100-record demo dataset to 50,000 records while preserving
+Expands the 100-record demo dataset to 100,000 records while preserving
 statistical distributions and medical data relationships.
 """
 
@@ -18,9 +18,9 @@ np.random.seed(42)
 random.seed(42)
 
 # Configuration
-SOURCE_DIR = os.path.join("..", "data", "mimic-clinical-iv-demo", "hosp")
-OUTPUT_DIR = os.path.join("..", "synthetic_data", "mimic-clinical-iv-demo", "hosp")
-TARGET_PATIENTS = 50000
+SOURCE_DIR = os.path.join("..", "..", "data", "mimic-clinical-iv-demo", "hosp")
+OUTPUT_DIR = os.path.join("..", "..", "synthetic_data", "mimic-clinical-iv-demo", "hosp")
+TARGET_PATIENTS = 100000
 TARGET_ADMISSIONS_PER_PATIENT_RANGE = (1, 8)  # 1-8 admissions per patient
 TARGET_PRESCRIPTIONS_PER_ADMISSION_RANGE = (2, 15)  # 2-15 prescriptions per admission
 TARGET_DIAGNOSES_PER_ADMISSION_RANGE = (1, 8)  # 1-8 diagnoses per admission

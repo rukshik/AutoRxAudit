@@ -1,0 +1,16 @@
+feature,selected_for_oud,selected_for_rx
+opioid_exposure_days,False,True
+atc_B_rx_count,False,True
+age_at_first_admit,False,True
+atc_Other_rx_count,False,True
+race,False,True
+total_los_days,False,True
+atc_A_rx_count,False,True
+avg_los_days,False,True
+opioid_hadms,False,True
+n_hospital_admits,False,True
+distinct_opioids,False,True
+any_opioid_flag,False,True
+any_benzo_flag,False,True
+atc_C_rx_count,False,True
+opioid_rx_count,False,True

@@ -222,7 +222,7 @@ def main():
     print("=== Feature Selection with Proper Data Splitting (50K Synthetic Records) ===")
 
     # Load synthetic data
-    DEMO_DIR = os.path.join("synthetic_data", "mimic-clinical-iv-demo", "hosp")
+    DEMO_DIR = os.path.join("..", "synthetic_data", "mimic-clinical-iv-demo", "hosp")
     
     print("Loading synthetic data...")
     patients = read_csv("patients.csv.gz", DEMO_DIR)
@@ -335,17 +335,20 @@ def main():
     # Create final feature set
     final_features = ["subject_id"] + all_important_features + ["y_oud", "will_get_opioid_rx"]
     
+    # Output directory for AI layer
+    ai_layer_dir = os.path.join("..", "ai-layer")
+    
     # Neural Network training set (with selected features)
     df_nn_train = df_neural_network[final_features].copy()
-    df_nn_train.to_csv("neural_network_training_data.csv", index=False)
+    df_nn_train.to_csv(os.path.join(ai_layer_dir, "neural_network_training_data.csv"), index=False)
     
     # Final test set (with selected features)
     df_final_test_selected = df_final_test[final_features].copy()
-    df_final_test_selected.to_csv("neural_network_final_test_data.csv", index=False)
+    df_final_test_selected.to_csv(os.path.join(ai_layer_dir, "neural_network_final_test_data.csv"), index=False)
     
     # Full dataset with selected features (for reference)
     df_full_selected = df[final_features].copy()
-    df_full_selected.to_csv("full_dataset_selected_features.csv", index=False)
+    df_full_selected.to_csv(os.path.join(ai_layer_dir, "full_dataset_selected_features.csv"), index=False)
 
     print(f"[SAVED] Neural Network training data: neural_network_training_data.csv")
     print(f"        Shape: {df_nn_train.shape}")
@@ -360,7 +363,7 @@ def main():
         "selected_for_oud": [f in oud_features for f in all_important_features],
         "selected_for_rx": [f in rx_features for f in all_important_features],
     })
-    importance_df.to_csv("feature_importance_results.csv", index=False)
+    importance_df.to_csv(os.path.join(ai_layer_dir, "feature_importance_results.csv"), index=False)
     print(f"[SAVED] Feature importance results: feature_importance_results.csv")
     
     print(f"\n" + "=" * 60)

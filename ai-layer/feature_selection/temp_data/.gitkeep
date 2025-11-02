@@ -1,0 +1,2 @@
+# This file ensures the temp_data directory is tracked in git
+# All temporary analysis files in this directory are gitignored

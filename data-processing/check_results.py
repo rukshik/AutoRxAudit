@@ -1,8 +1,11 @@
 import pandas as pd
+import os
 
-nn_train = pd.read_csv('neural_network_training_data.csv')
-nn_test = pd.read_csv('neural_network_final_test_data.csv')
-feature_importance = pd.read_csv('feature_importance_results.csv')
+# Read from ai-layer directory
+ai_layer_dir = os.path.join("..", "ai-layer")
+nn_train = pd.read_csv(os.path.join(ai_layer_dir, 'neural_network_training_data.csv'))
+nn_test = pd.read_csv(os.path.join(ai_layer_dir, 'neural_network_final_test_data.csv'))
+feature_importance = pd.read_csv(os.path.join(ai_layer_dir, 'feature_importance_results.csv'))
 
 print("=" * 60)
 print("FINAL RESULTS SUMMARY")

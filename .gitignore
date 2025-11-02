@@ -14,3 +14,9 @@ synthetic_data/
 *.pkl
 logs.log
 
+# Processed data folders - keep folder structure but ignore contents
+ai-layer/processed_data/*
+!ai-layer/processed_data/.gitkeep
+ai-layer/feature_selection/temp_data/*
+!ai-layer/feature_selection/temp_data/.gitkeep
+
