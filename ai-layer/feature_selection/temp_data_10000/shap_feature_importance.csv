@@ -1,0 +1,15 @@
+feature,selected_for_oud,selected_for_eligibility
+distinct_opioids,True,False
+opioid_exposure_days,True,False
+avg_los_days,True,False
+opioid_rx_count,True,False
+n_hospital_admits,True,True
+atc_A_rx_count,False,True
+any_opioid_flag,True,False
+atc_C_rx_count,True,True
+opioid_hadms,True,False
+atc_J_rx_count,True,True
+age_at_first_admit,True,True
+total_los_days,True,True
+atc_N_rx_count,False,True
+atc_Other_rx_count,False,True

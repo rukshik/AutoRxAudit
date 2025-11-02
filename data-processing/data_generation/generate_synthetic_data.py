@@ -1,7 +1,20 @@
 """
 Synthetic Data Generator for MIMIC-IV Demo Expansion
-Expands the 100-record demo dataset to 100,000 records while preserving
+Expands the 100-record demo dataset to N records while preserving
 statistical distributions and medical data relationships.
+
+Key Logic:
+1. Patient-level pain flag: 70% of patients have chronic pain conditions (matches MIMIC data)
+2. Admission-level pain diagnosis: If patient has pain, 60% of their admissions show pain diagnosis
+3. ICD codes: Mix of OUD (0.5% admissions), Pain (from real MIMIC codes), and Common conditions
+4. Opioid prescriptions:
+   - With pain diagnosis: 40% chance (appropriate use - not all pain needs opioids)
+   - Without pain diagnosis: 2% chance (inappropriate/potential abuse)
+   This creates realistic variation for eligibility model training
+
+Usage:
+  python generate_synthetic_data.py --patients 1000
+  python generate_synthetic_data.py --patients 100000 --output-dir ../../synthetic_data_100k/mimic-clinical-iv-demo/hosp
 """
 
 import os
@@ -12,21 +25,26 @@ from datetime import datetime, timedelta
 import random
 from collections import defaultdict
 import gzip
+import json
+import argparse
 
 # Set random seeds for reproducibility
 np.random.seed(42)
 random.seed(42)
 
-# Configuration
-SOURCE_DIR = os.path.join("..", "..", "data", "mimic-clinical-iv-demo", "hosp")
-OUTPUT_DIR = os.path.join("..", "..", "synthetic_data", "mimic-clinical-iv-demo", "hosp")
-TARGET_PATIENTS = 100000
+# Default configuration
+DEFAULT_SOURCE_DIR = os.path.join("..", "..", "data", "mimic-clinical-iv-demo", "hosp")
+DEFAULT_OUTPUT_DIR = os.path.join("..", "..", "synthetic_data", "mimic-clinical-iv-demo", "hosp")
+DEFAULT_TARGET_PATIENTS = 1000
 TARGET_ADMISSIONS_PER_PATIENT_RANGE = (1, 8)  # 1-8 admissions per patient
 TARGET_PRESCRIPTIONS_PER_ADMISSION_RANGE = (2, 15)  # 2-15 prescriptions per admission
 TARGET_DIAGNOSES_PER_ADMISSION_RANGE = (1, 8)  # 1-8 diagnoses per admission
 
 class SyntheticDataGenerator:
-    def __init__(self):
+    def __init__(self, target_patients, source_dir, output_dir):
+        self.target_patients = target_patients
+        self.source_dir = source_dir
+        self.output_dir = output_dir
         self.next_subject_id = 20000000  # Start from a safe range
         self.next_hadm_id = 30000000
         self.next_prescription_id = 40000000
@@ -37,10 +55,17 @@ class SyntheticDataGenerator:
         
     def load_original_data(self):
         """Load original sample data to understand distributions"""
-        self.orig_patients = pd.read_csv(os.path.join(SOURCE_DIR, "patients.csv.gz"))
-        self.orig_admissions = pd.read_csv(os.path.join(SOURCE_DIR, "admissions.csv.gz"))
-        self.orig_diagnoses = pd.read_csv(os.path.join(SOURCE_DIR, "diagnoses_icd.csv.gz"))
-        self.orig_prescriptions = pd.read_csv(os.path.join(SOURCE_DIR, "prescriptions.csv.gz"))
+        self.orig_patients = pd.read_csv(os.path.join(self.source_dir, "patients.csv.gz"))
+        self.orig_admissions = pd.read_csv(os.path.join(self.source_dir, "admissions.csv.gz"))
+        self.orig_diagnoses = pd.read_csv(os.path.join(self.source_dir, "diagnoses_icd.csv.gz"))
+        self.orig_prescriptions = pd.read_csv(os.path.join(self.source_dir, "prescriptions.csv.gz"))
+        
+        # Load pain diagnosis codes
+        with open('pain_diagnosis_codes.json', 'r') as f:
+            pain_codes = json.load(f)
+            self.pain_icd9_codes = pain_codes['icd9']
+            self.pain_icd10_codes = pain_codes['icd10']
+            print(f"Loaded {len(self.pain_icd9_codes)} ICD-9 and {len(self.pain_icd10_codes)} ICD-10 pain codes")
         
         print(f"Original data shapes:")
         print(f"  Patients: {self.orig_patients.shape}")
@@ -50,23 +75,47 @@ class SyntheticDataGenerator:
         
     def generate_patients(self):
         """Generate synthetic patient records"""
-        print(f"Generating {TARGET_PATIENTS} synthetic patients...")
+        print(f"Generating {self.target_patients} synthetic patients...")
         
         # Analyze original patient distributions
         gender_dist = self.orig_patients['gender'].value_counts(normalize=True)
         age_stats = self.orig_patients['anchor_age'].describe()
         year_stats = self.orig_patients['anchor_year'].describe()
         
+        # Track which patients have chronic pain conditions (70% based on MIMIC data)
+        self.pain_patients = set()
+        
+        # Track which patients have OUD (2.5% - realistic prevalence)
+        self.oud_patients = set()
+        
         patients = []
-        for i in range(TARGET_PATIENTS):
+        for i in range(self.target_patients):
+            if (i + 1) % 10000 == 0:
+                print(f"  Generated {i + 1:,} patients...")
+            
             # Generate subject_id
             subject_id = self.next_subject_id + i
+            
+            # 2.5% of patients have OUD (realistic prevalence)
+            has_oud = np.random.random() < 0.025
+            if has_oud:
+                self.oud_patients.add(subject_id)
+                # OUD patients ALWAYS have chronic pain (95%+ comorbidity)
+                self.pain_patients.add(subject_id)
+            else:
+                # 70% of non-OUD patients have pain conditions (matches MIMIC data)
+                if np.random.random() < 0.70:
+                    self.pain_patients.add(subject_id)
             
             # Sample gender based on original distribution
             gender = np.random.choice(gender_dist.index, p=gender_dist.values)
             
-            # Generate age with realistic distribution (normal with clipping)
-            age = int(np.clip(np.random.normal(age_stats['mean'], age_stats['std']), 18, 89))
+            # Generate age with realistic distribution
+            # OUD patients tend to be younger (mean ~45 vs ~65 for general population)
+            if has_oud:
+                age = int(np.clip(np.random.normal(45, 12), 25, 75))
+            else:
+                age = int(np.clip(np.random.normal(age_stats['mean'], age_stats['std']), 18, 89))
             
             # Generate anchor_year around the original range
             anchor_year = int(np.random.uniform(year_stats['min'], year_stats['max']))
@@ -106,10 +155,20 @@ class SyntheticDataGenerator:
         
         admissions = []
         hadm_id = self.next_hadm_id
+        patient_count = 0
         
         for _, patient in self.synthetic_patients.iterrows():
+            patient_count += 1
+            if patient_count % 10000 == 0:
+                print(f"  Processing patient {patient_count:,} / {self.target_patients:,}...")
+            
             # Number of admissions for this patient
-            n_admissions = np.random.randint(*TARGET_ADMISSIONS_PER_PATIENT_RANGE)
+            # OUD patients have more frequent hospitalizations (1.5x more)
+            subject_id = patient['subject_id']
+            if subject_id in self.oud_patients:
+                n_admissions = np.random.randint(3, 10)  # 3-10 admissions for OUD patients
+            else:
+                n_admissions = np.random.randint(*TARGET_ADMISSIONS_PER_PATIENT_RANGE)
             
             # Generate admissions for this patient
             base_date = datetime(patient['anchor_year'], 1, 1)
@@ -176,62 +235,100 @@ class SyntheticDataGenerator:
         print(f"Generated admissions: {self.synthetic_admissions.shape}")
         
     def generate_diagnoses(self):
-        """Generate synthetic diagnosis records"""
+        """Generate synthetic diagnosis records - OPTIMIZED VERSION"""
         print("Generating synthetic diagnoses...")
         
-        # Analyze original diagnosis patterns
-        icd_codes = self.orig_diagnoses['icd_code'].value_counts()
-        icd_versions = self.orig_diagnoses['icd_version'].value_counts(normalize=True)
-        
-        # Create lists of common ICD codes by category
+        # Pre-sample common codes for speed
         common_icd9_codes = ['41401', '4280', '25000', '2724', '4019', '5849', '78650', '2859', '5990', '42731']
         common_icd10_codes = ['I25.10', 'I50.9', 'E11.9', 'E78.5', 'I10', 'N18.6', 'R50.9', 'D64.9', 'N39.0', 'I48.91']
         
-        # OUD-related codes (for creating positive cases)
-        oud_icd9_codes = ['30400', '30401', '30402', '30403', '30470', '30471', '30472', '30473', 
-                         '30550', '30551', '30552', '30553']
-        oud_icd10_codes = ['F11.10', 'F11.11', 'F11.12', 'F11.13', 'F11.14', 'F11.15', 
-                          'F11.16', 'F11.17', 'F11.18', 'F11.19', 'F11.20', 'F11.21', 'F11.22']
+        # OUD-related codes
+        oud_icd9_codes = ['30400', '30401', '30402', '30403', '30470', '30471', '30472', '30473']
+        oud_icd10_codes = ['F11.10', 'F11.11', 'F11.12', 'F11.20', 'F11.21', 'F11.22']
         
-        diagnoses = []
+        # Sample subset of pain codes for faster selection
+        pain_icd9_sample = np.random.choice(self.pain_icd9_codes, min(500, len(self.pain_icd9_codes)), replace=False).tolist()
+        pain_icd10_sample = np.random.choice(self.pain_icd10_codes, min(500, len(self.pain_icd10_codes)), replace=False).tolist()
         
-        for _, admission in self.synthetic_admissions.iterrows():
-            # Number of diagnoses for this admission
-            n_diagnoses = np.random.randint(*TARGET_DIAGNOSES_PER_ADMISSION_RANGE)
+        # Process in batches for speed
+        batch_size = 50000
+        all_diagnoses = []
+        total_admissions = len(self.synthetic_admissions)
+        
+        # Convert to numpy arrays for faster access
+        admission_ids = self.synthetic_admissions['hadm_id'].values
+        subject_ids = self.synthetic_admissions['subject_id'].values
+        
+        for batch_start in range(0, total_admissions, batch_size):
+            batch_end = min(batch_start + batch_size, total_admissions)
+            print(f"  Processing admissions {batch_start:,} to {batch_end:,}...")
             
-            # 5% chance this admission will have OUD diagnosis
-            has_oud = np.random.random() < 0.05
+            batch_diagnoses = []
             
-            for diag_num in range(n_diagnoses):
-                # Choose ICD version
-                icd_version = np.random.choice(icd_versions.index, p=icd_versions.values)
+            for idx in range(batch_start, batch_end):
+                hadm_id = admission_ids[idx]
+                subject_id = subject_ids[idx]
                 
-                # Select ICD code
-                if has_oud and diag_num == 0:  # First diagnosis can be OUD
-                    if icd_version == 9:
-                        icd_code = np.random.choice(oud_icd9_codes)
-                    else:
-                        icd_code = np.random.choice(oud_icd10_codes)
+                # Number of diagnoses for this admission
+                n_diagnoses = np.random.randint(*TARGET_DIAGNOSES_PER_ADMISSION_RANGE)
+                
+                # Check if this is an OUD patient (patient-level, not random per admission)
+                has_oud = subject_id in self.oud_patients
+                
+                # OUD patients: 30% chance OUD diagnosis appears in THIS admission
+                # (not every admission has OUD coded, even for OUD patients)
+                has_oud_this_admission = has_oud and (np.random.random() < 0.30)
+                
+                # Check if this patient has pain conditions (patient-level, not admission-level)
+                has_pain = subject_id in self.pain_patients
+                
+                # If patient has pain, 60% chance this specific admission involves pain diagnosis
+                if has_pain:
+                    has_pain_this_admission = np.random.random() < 0.60
                 else:
-                    # Regular diagnosis
-                    if icd_version == 9:
-                        icd_code = np.random.choice(common_icd9_codes)
+                    has_pain_this_admission = False
+                
+                for diag_num in range(n_diagnoses):
+                    # Choose ICD version (90% ICD-10, 10% ICD-9)
+                    icd_version = 10 if np.random.random() < 0.9 else 9
+                    
+                    # Select ICD code with priority logic
+                    if has_oud_this_admission and diag_num == 0:  # First diagnosis is OUD
+                        icd_code = np.random.choice(oud_icd10_codes if icd_version == 10 else oud_icd9_codes)
+                    elif has_pain_this_admission and diag_num == 0:  # First diagnosis can be pain-related
+                        icd_code = np.random.choice(pain_icd10_sample if icd_version == 10 else pain_icd9_sample)
                     else:
-                        icd_code = np.random.choice(common_icd10_codes)
-                
-                diagnoses.append({
-                    'subject_id': admission['subject_id'],
-                    'hadm_id': admission['hadm_id'],
-                    'seq_num': diag_num + 1,
-                    'icd_code': icd_code,
-                    'icd_version': icd_version
-                })
-                
-        self.synthetic_diagnoses = pd.DataFrame(diagnoses)
+                        # Regular diagnosis
+                        icd_code = np.random.choice(common_icd10_codes if icd_version == 10 else common_icd9_codes)
+                    
+                    batch_diagnoses.append({
+                        'subject_id': subject_id,
+                        'hadm_id': hadm_id,
+                        'seq_num': diag_num + 1,
+                        'icd_code': icd_code,
+                        'icd_version': icd_version
+                    })
+            
+            all_diagnoses.extend(batch_diagnoses)
+        
+        self.synthetic_diagnoses = pd.DataFrame(all_diagnoses)
         print(f"Generated diagnoses: {self.synthetic_diagnoses.shape}")
         
+        # Track pain-related diagnoses
+        pain_mask = (
+            self.synthetic_diagnoses['icd_code'].isin(pain_icd9_sample) |
+            self.synthetic_diagnoses['icd_code'].isin(pain_icd10_sample)
+        )
+        pain_diagnoses = self.synthetic_diagnoses[pain_mask]
+        pain_patients = pain_diagnoses['subject_id'].nunique()
+        print(f"  Pain-related diagnoses: {len(pain_diagnoses)} records")
+        print(f"  Patients with pain: {pain_patients} ({pain_patients/self.target_patients*100:.1f}%)")
+        
+        # Create set of admissions with pain diagnoses (for prescription logic)
+        self.pain_admissions = set(pain_diagnoses['hadm_id'].unique())
+        
     def generate_prescriptions(self):
-        """Generate synthetic prescription records"""
+        """Generate synthetic prescription records - OPTIMIZED VERSION"""
         print("Generating synthetic prescriptions...")
         
         # Define realistic drug categories with examples
@@ -249,70 +346,120 @@ class SyntheticDataGenerator:
                      'Simvastatin', 'Warfarin', 'Heparin', 'Albuterol']
         }
         
-        prescriptions = []
+        # Process in batches for speed
+        batch_size = 50000
+        all_prescriptions = []
         prescription_id = self.next_prescription_id
+        total_admissions = len(self.synthetic_admissions)
         
-        for _, admission in self.synthetic_admissions.iterrows():
-            # Number of prescriptions for this admission
-            n_prescriptions = np.random.randint(*TARGET_PRESCRIPTIONS_PER_ADMISSION_RANGE)
+        # Convert to numpy arrays for faster access
+        admission_ids = self.synthetic_admissions['hadm_id'].values
+        subject_ids = self.synthetic_admissions['subject_id'].values
+        admit_times = self.synthetic_admissions['admittime'].values
+        discharge_times = self.synthetic_admissions['dischtime'].values
+        
+        for batch_start in range(0, total_admissions, batch_size):
+            batch_end = min(batch_start + batch_size, total_admissions)
+            print(f"  Processing admissions {batch_start:,} to {batch_end:,}...")
             
-            admit_date = datetime.strptime(admission['admittime'], '%Y-%m-%d %H:%M:%S')
-            discharge_date = datetime.strptime(admission['dischtime'], '%Y-%m-%d %H:%M:%S')
+            batch_prescriptions = []
             
-            for rx_num in range(n_prescriptions):
-                # Select drug category and specific drug
-                category = np.random.choice(list(drug_categories.keys()))
-                drug = np.random.choice(drug_categories[category])
+            for idx in range(batch_start, batch_end):
+                hadm_id = admission_ids[idx]
+                subject_id = subject_ids[idx]
+                admit_time_str = admit_times[idx]
+                discharge_time_str = discharge_times[idx]
                 
-                # Generate realistic dosing
-                if category == 'opioids':
-                    dose_val_rx = f"{np.random.choice([2, 5, 10, 15, 30])} mg"
-                    route = np.random.choice(['PO', 'IV', 'SL'])
-                elif category == 'antibiotics':
-                    dose_val_rx = f"{np.random.choice([250, 500, 1000])} mg"
-                    route = np.random.choice(['PO', 'IV'])
-                else:
-                    dose_val_rx = f"{np.random.choice([5, 10, 25, 50, 100])} mg"
-                    route = np.random.choice(['PO', 'IV', 'SL', 'TOP'])
+                # Check if this admission has pain diagnosis
+                has_pain_diagnosis = hadm_id in self.pain_admissions
                 
-                # Prescription timing within admission
-                start_offset_hours = np.random.randint(0, 24)  # Start within first day
-                duration_hours = np.random.randint(1, int((discharge_date - admit_date).total_seconds() // 3600))
+                # Number of prescriptions for this admission
+                n_prescriptions = np.random.randint(*TARGET_PRESCRIPTIONS_PER_ADMISSION_RANGE)
                 
-                starttime = admit_date + timedelta(hours=start_offset_hours)
-                stoptime = starttime + timedelta(hours=duration_hours)
+                admit_date = datetime.strptime(admit_time_str, '%Y-%m-%d %H:%M:%S')
+                discharge_date = datetime.strptime(discharge_time_str, '%Y-%m-%d %H:%M:%S')
                 
-                # Ensure stoptime doesn't exceed discharge
-                if stoptime > discharge_date:
-                    stoptime = discharge_date
+                # Track opioid prescriptions for this admission
+                opioid_count = 0
                 
-                prescriptions.append({
-                    'subject_id': admission['subject_id'],
-                    'hadm_id': admission['hadm_id'],
-                    'pharmacy_id': prescription_id,
-                    'poe_id': f"poe_{prescription_id}",
-                    'poe_seq': rx_num + 1,
-                    'order_provider_id': f"provider_{np.random.randint(1000, 9999)}",
-                    'starttime': starttime.strftime('%Y-%m-%d %H:%M:%S'),
-                    'stoptime': stoptime.strftime('%Y-%m-%d %H:%M:%S'),
-                    'drug_type': 'MAIN',
-                    'drug': drug,
-                    'formulary_drug_cd': f"FORM{prescription_id % 10000}",
-                    'gsn': f"{np.random.randint(100000, 999999)}",
-                    'ndc': f"{np.random.randint(10000, 99999)}-{np.random.randint(100, 999)}-{np.random.randint(10, 99)}",
-                    'prod_strength': dose_val_rx,
-                    'form_rx': np.random.choice(['TAB', 'CAP', 'INJ', 'SUSP']),
-                    'dose_val_rx': dose_val_rx,
-                    'dose_unit_rx': 'mg',
-                    'form_val_disp': np.random.randint(1, 100),
-                    'form_unit_disp': 'each',
-                    'doses_per_24_hrs': np.random.choice([1, 2, 3, 4, 6]),
-                    'route': route
-                })
+                # Check if this is an OUD patient
+                is_oud_patient = subject_id in self.oud_patients
                 
-                prescription_id += 1
+                # Decide how many opioids for this admission
+                # OUD patients: multiple opioids per admission (80% chance, 1-3 opioids)
+                # Pain diagnosis (non-OUD): moderate use (40% chance, 1 opioid)
+                # No pain (non-OUD): rare (3% chance, 1 opioid)
+                max_opioids = 0
+                if is_oud_patient and np.random.random() < 0.80:  # 80% of OUD admissions get opioids
+                    max_opioids = np.random.randint(1, 4)  # 1-3 opioids per admission
+                elif has_pain_diagnosis and np.random.random() < 0.40:  # 40% with pain
+                    max_opioids = 1
+                elif not has_pain_diagnosis and np.random.random() < 0.03:  # 3% inappropriate
+                    max_opioids = 1
                 
-        self.synthetic_prescriptions = pd.DataFrame(prescriptions)
+                for rx_num in range(n_prescriptions):
+                    # Prescribe opioids up to max_opioids limit
+                    if opioid_count < max_opioids:
+                        category = 'opioids'
+                        opioid_count += 1
+                    else:
+                        # Select non-opioid drug categories
+                        available_categories = [k for k in drug_categories.keys() if k != 'opioids']
+                        category = np.random.choice(available_categories)
+                    
+                    drug = np.random.choice(drug_categories[category])
+                    
+                    # Generate realistic dosing
+                    if category == 'opioids':
+                        dose_val_rx = f"{np.random.choice([2, 5, 10, 15, 30])} mg"
+                        route = np.random.choice(['PO', 'IV', 'SL'])
+                    elif category == 'antibiotics':
+                        dose_val_rx = f"{np.random.choice([250, 500, 1000])} mg"
+                        route = np.random.choice(['PO', 'IV'])
+                    else:
+                        dose_val_rx = f"{np.random.choice([5, 10, 25, 50, 100])} mg"
+                        route = np.random.choice(['PO', 'IV', 'SL', 'TOP'])
+                    
+                    # Prescription timing within admission
+                    start_offset_hours = np.random.randint(0, 24)
+                    duration_hours = np.random.randint(1, max(1, int((discharge_date - admit_date).total_seconds() // 3600)))
+                    
+                    starttime = admit_date + timedelta(hours=start_offset_hours)
+                    stoptime = starttime + timedelta(hours=duration_hours)
+                    
+                    # Ensure stoptime doesn't exceed discharge
+                    if stoptime > discharge_date:
+                        stoptime = discharge_date
+                    
+                    batch_prescriptions.append({
+                        'subject_id': subject_id,
+                        'hadm_id': hadm_id,
+                        'pharmacy_id': prescription_id,
+                        'poe_id': f"poe_{prescription_id}",
+                        'poe_seq': rx_num + 1,
+                        'order_provider_id': f"provider_{np.random.randint(1000, 9999)}",
+                        'starttime': starttime.strftime('%Y-%m-%d %H:%M:%S'),
+                        'stoptime': stoptime.strftime('%Y-%m-%d %H:%M:%S'),
+                        'drug_type': 'MAIN',
+                        'drug': drug,
+                        'formulary_drug_cd': f"FORM{prescription_id % 10000}",
+                        'gsn': f"{np.random.randint(100000, 999999)}",
+                        'ndc': f"{np.random.randint(10000, 99999)}-{np.random.randint(100, 999)}-{np.random.randint(10, 99)}",
+                        'prod_strength': dose_val_rx,
+                        'form_rx': np.random.choice(['TAB', 'CAP', 'INJ', 'SUSP']),
+                        'dose_val_rx': dose_val_rx,
+                        'dose_unit_rx': 'mg',
+                        'form_val_disp': np.random.randint(1, 100),
+                        'form_unit_disp': 'each',
+                        'doses_per_24_hrs': np.random.choice([1, 2, 3, 4, 6]),
+                        'route': route
+                    })
+                    
+                    prescription_id += 1
+            
+            all_prescriptions.extend(batch_prescriptions)
+                
+        self.synthetic_prescriptions = pd.DataFrame(all_prescriptions)
         print(f"Generated prescriptions: {self.synthetic_prescriptions.shape}")
         
     def save_data(self):
@@ -320,7 +467,7 @@ class SyntheticDataGenerator:
         print("Saving synthetic data...")
         
         # Ensure output directory exists
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
         
         # Save each dataset
         datasets = {
@@ -331,11 +478,11 @@ class SyntheticDataGenerator:
         }
         
         for filename, df in datasets.items():
-            filepath = os.path.join(OUTPUT_DIR, filename)
+            filepath = os.path.join(self.output_dir, filename)
             df.to_csv(filepath, index=False, compression='gzip')
             print(f"  Saved {filename}: {df.shape}")
         
-        print(f"\nAll synthetic data saved to: {OUTPUT_DIR}")
+        print(f"\nAll synthetic data saved to: {self.output_dir}")
         
     def generate_all(self):
         """Generate complete synthetic dataset"""
@@ -352,7 +499,7 @@ class SyntheticDataGenerator:
         print("\n" + "=" * 60)
         print("GENERATION COMPLETE")
         print("=" * 60)
-        print(f"Generated {TARGET_PATIENTS:,} patients with realistic clinical data")
+        print(f"Generated {self.target_patients:,} patients with realistic clinical data")
         print(f"Total admissions: {len(self.synthetic_admissions):,}")
         print(f"Total diagnoses: {len(self.synthetic_diagnoses):,}")
         print(f"Total prescriptions: {len(self.synthetic_prescriptions):,}")
@@ -375,6 +522,59 @@ class SyntheticDataGenerator:
         print(f"Opioid prescriptions: {len(opioid_prescriptions)} ({len(opioid_prescriptions)/len(self.synthetic_prescriptions)*100:.1f}%)")
 
 
-if __name__ == "__main__":
-    generator = SyntheticDataGenerator()
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate synthetic MIMIC-IV clinical data for opioid audit system',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Generate 1000 patients (fast for development)
+  python generate_synthetic_data.py --patients 1000
+  
+  # Generate 100K patients with custom output directory
+  python generate_synthetic_data.py --patients 100000 --output-dir ../../synthetic_data_100k/mimic-clinical-iv-demo/hosp
+  
+  # Use custom source data location
+  python generate_synthetic_data.py --patients 5000 --source-dir /path/to/mimic/data
+        """
+    )
+    
+    parser.add_argument(
+        '--patients', '-n',
+        type=int,
+        default=DEFAULT_TARGET_PATIENTS,
+        help=f'Number of patients to generate (default: {DEFAULT_TARGET_PATIENTS})'
+    )
+    
+    parser.add_argument(
+        '--source-dir', '-s',
+        type=str,
+        default=DEFAULT_SOURCE_DIR,
+        help=f'Directory containing original MIMIC-IV demo data (default: {DEFAULT_SOURCE_DIR})'
+    )
+    
+    parser.add_argument(
+        '--output-dir', '-o',
+        type=str,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f'Directory to save generated synthetic data (default: {DEFAULT_OUTPUT_DIR})'
+    )
+    
+    args = parser.parse_args()
+    
+    print(f"Configuration:")
+    print(f"  Target patients: {args.patients:,}")
+    print(f"  Source directory: {args.source_dir}")
+    print(f"  Output directory: {args.output_dir}")
+    print()
+    
+    generator = SyntheticDataGenerator(
+        target_patients=args.patients,
+        source_dir=args.source_dir,
+        output_dir=args.output_dir
+    )
     generator.generate_all()
+
+
+if __name__ == "__main__":
+    main()
