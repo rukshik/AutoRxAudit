@@ -10,6 +10,10 @@ dist/
 # Synthetic data (can be regenerated)
 synthetic_data/
 
+# Large v2 synthetic datasets (exceed GitHub limits)
+datasets/synthetic_mimic_v2/olddata/
+datasets/synthetic_mimic_v2/100000/
+
 # Generated output files (can be regenerated)
 *.pkl
 logs.log
