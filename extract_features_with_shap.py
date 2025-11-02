@@ -301,7 +301,7 @@ def prepare_features_for_shap(df: pd.DataFrame) -> tuple:
 
 
 def get_shap_feature_importance(
-    X: pd.DataFrame, y: pd.Series, target_name: str, top_n: int = 10
+    X: pd.DataFrame, y: pd.Series, target_name: str, top_n: int = 25
 ) -> list:
     """
     Use SHAP to identify the most important features for a given target.
@@ -407,12 +407,12 @@ def main():
 
     # Analyze y_oud (if sufficient data)
     oud_features = get_shap_feature_importance(
-        X, y_oud, "y_oud (Opioid Use Disorder)", top_n=10
+        X, y_oud, "y_oud (Opioid Use Disorder)", top_n=25   
     )
 
     # Analyze will_get_opioid_rx
     rx_features = get_shap_feature_importance(
-        X, y_rx, "will_get_opioid_rx (Will receive opioid prescription)", top_n=15
+        X, y_rx, "will_get_opioid_rx (Will receive opioid prescription)", top_n=25
     )
 
     # Combine important features from both analyses

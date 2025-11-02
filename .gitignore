@@ -7,3 +7,10 @@ cache/
 coverage/
 dist/
 
+# Synthetic data (can be regenerated)
+synthetic_data/
+
+# Generated output files (can be regenerated)
+*.pkl
+logs.log
+
