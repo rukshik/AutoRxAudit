@@ -154,7 +154,8 @@ def train_model(train_df, val_df, test_df, target, feature_cols, model_name, out
     print(f"FINAL EVALUATION ON TEST SET ({test_modeling.shape[0]} samples)")
     print(f"{'='*80}")
     
-    test_predictions = predict_model(tuned_model, data=test_modeling)
+    # Use raw_score=True to get probability for each class
+    test_predictions = predict_model(tuned_model, data=test_modeling, raw_score=True)
     
     # Calculate metrics
     from sklearn.metrics import (
@@ -164,7 +165,8 @@ def train_model(train_df, val_df, test_df, target, feature_cols, model_name, out
     
     y_true = test_predictions[target]
     y_pred = test_predictions['prediction_label']
-    y_proba = test_predictions['prediction_score']
+    # Use prediction_score_1 for probability of positive class (class 1)
+    y_proba = test_predictions['prediction_score_1']
     
     metrics = {
         'accuracy': accuracy_score(y_true, y_pred),
