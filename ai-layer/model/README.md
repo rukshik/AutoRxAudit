@@ -57,7 +57,7 @@ For each of the two models, we train and compare:
 cd ai-layer/model
 
 # Train both models using PyCaret
-python train_two_models_pycaret.py --data-dir ../processed_data/1000 --output-dir ./results
+python pycaret_models.py --data-dir ../processed_data/1000 --output-dir ./results
 ```
 
 This will:
@@ -84,7 +84,7 @@ results/
 
 ```bash
 # Train both models using DNNs
-python train_two_models_dnn.py --data-dir ../processed_data/1000 --output-dir ./results
+python dnn_models.py --data-dir ../processed_data/1000 --output-dir ./results
 ```
 
 This will:
@@ -392,13 +392,13 @@ python shap_feature_selection.py --input-dir ../../synthetic_data/100000/mimic-i
 cd ai-layer/model
 
 # PyCaret
-python train_two_models_pycaret.py --data-dir ../processed_data/100000 --output-dir ./results_100k
+python pycaret_models.py --data-dir ../processed_data/100000 --output-dir ./results_100k
 
 # DNN
-python train_two_models_dnn.py --data-dir ../processed_data/100000 --output-dir ./results_100k
+python dnn_models.py --data-dir ../processed_data/100000 --output-dir ./results_100k
 
 # Compare
-python compare_all_models.py --results-dir ./results_100k
+python scripts/compare_all_models.py --results-dir ./results_100k
 ```
 
 ## Troubleshooting
@@ -442,9 +442,10 @@ After training and comparing models:
 
 ```
 model/
-  train_two_models_pycaret.py    # PyCaret training
-  train_two_models_dnn.py         # DNN training
-  compare_all_models.py           # Model comparison
+  pycaret_models.py               # PyCaret training
+  dnn_models.py                   # DNN training
+  scripts/
+    compare_all_models.py         # Model comparison
   README.md                       # This file
   
   results/                        # Training outputs (1K patients)

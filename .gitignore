@@ -14,9 +14,10 @@ synthetic_data/
 *.pkl
 logs.log
 
-# Processed data folders - keep folder structure but ignore contents
-ai-layer/processed_data/*
-!ai-layer/processed_data/.gitkeep
-ai-layer/feature_selection/temp_data/*
+# Temporary SHAP data (can be regenerated)
+ai-layer/feature_selection/temp_data*/
 !ai-layer/feature_selection/temp_data/.gitkeep
+
+# Note: ai-layer/processed_data/ is now tracked in git
+# Contains important feature-selected train/val/test splits for v3 datasets
 

@@ -537,8 +537,12 @@ def demo_ai_blockchain_integration():
     audit_manager = PrescriptionAuditManager(blockchain_audit)
     verification_system = PharmacyVerificationSystem(audit_manager)
 
-    # Initialize AI-Blockchain integrator with trained model
-    model_path = "/Users/rukshik/Documents/GitHub/AutoRxAudit/best_model_shap_will_get_opioid_rx.pkl"  # Using SHAP-based model
+    # Initialize AI-Blockchain integrator with trained models
+    # TODO: Update to use new two-model system (Eligibility + OUD Risk)
+    # Production models are in: ai-layer/model/results/10000_v3/
+    # - pycaret_eligibility_model.pkl (or dnn_eligibility_model.pth)
+    # - pycaret_oud_risk_model.pkl (or dnn_oud_risk_model.pth)
+    model_path = "../ai-layer/model/results/10000_v3_fixed/pycaret_eligibility_model.pkl"  # Update to use production model
     integrator = AIBlockchainIntegrator(audit_manager, ai_model_path=model_path)
 
     # Initialize API

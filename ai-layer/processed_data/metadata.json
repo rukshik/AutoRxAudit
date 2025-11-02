@@ -1,0 +1,29 @@
+{
+  "total_records": 100000,
+  "train_records": 56700,
+  "validation_records": 6300,
+  "test_records": 30000,
+  "shap_records": 7000,
+  "original_features": 21,
+  "selected_features": 14,
+  "feature_names": [
+    "age_at_first_admit",
+    "opioid_rx_count",
+    "atc_C_rx_count",
+    "opioid_hadms",
+    "total_los_days",
+    "atc_A_rx_count",
+    "distinct_opioids",
+    "n_hospital_admits",
+    "atc_J_rx_count",
+    "avg_los_days",
+    "any_opioid_flag",
+    "opioid_exposure_days",
+    "atc_Other_rx_count",
+    "atc_N_rx_count"
+  ],
+  "oud_positive_train": 10304,
+  "oud_positive_validation": 1145,
+  "oud_positive_test": 5452,
+  "data_split_strategy": "7% SHAP, 56% train, 7% validation, 30% test"
+}
