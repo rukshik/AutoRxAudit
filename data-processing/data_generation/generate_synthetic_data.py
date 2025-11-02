@@ -461,10 +461,245 @@ class SyntheticDataGenerator:
                 
         self.synthetic_prescriptions = pd.DataFrame(all_prescriptions)
         print(f"Generated prescriptions: {self.synthetic_prescriptions.shape}")
+    
+    def generate_omr(self):
+        """Generate OMR (Organ Measurement Records) - BMI, weight, height"""
+        print("Generating OMR records (BMI, weight, height)...")
+        
+        omr_records = []
+        seq_num = 1
+        
+        for _, patient in self.synthetic_patients.iterrows():
+            subject_id = patient['subject_id']
+            age = patient['anchor_age']
+            gender = patient['gender']
+            has_pain = subject_id in self.pain_patients
+            
+            # ~78% of patients have BMI recorded (based on MIMIC analysis)
+            if np.random.random() < 0.78:
+                # Generate realistic BMI
+                # Pain patients tend to have higher BMI (obesity → back pain, knee pain)
+                if has_pain:
+                    # Pain patients: higher BMI (mean ~31, std 7)
+                    bmi = np.clip(np.random.normal(31, 7), 16, 50)
+                else:
+                    # Non-pain patients: normal BMI (mean ~27, std 5)
+                    bmi = np.clip(np.random.normal(27, 5), 16, 45)
+                
+                # Generate height (in inches) - realistic for gender
+                if gender == 'M':
+                    height = np.clip(np.random.normal(69, 3), 60, 78)  # Male: 5'9" avg
+                else:
+                    height = np.clip(np.random.normal(64, 3), 55, 73)  # Female: 5'4" avg
+                
+                # Calculate weight from BMI: weight(kg) = BMI * height(m)^2
+                height_m = height * 0.0254  # inches to meters
+                weight_kg = bmi * (height_m ** 2)
+                weight_lbs = weight_kg * 2.20462  # kg to lbs
+                
+                # Generate chartdate (during one of their admissions)
+                patient_admissions = self.synthetic_admissions[
+                    self.synthetic_admissions['subject_id'] == subject_id
+                ]
+                if len(patient_admissions) > 0:
+                    # Pick random admission
+                    admission = patient_admissions.sample(n=1).iloc[0]
+                    admit_date = pd.to_datetime(admission['admittime']).date()
+                    
+                    # Add BMI record
+                    omr_records.append({
+                        'subject_id': subject_id,
+                        'chartdate': admit_date,
+                        'seq_num': seq_num,
+                        'result_name': 'BMI (kg/m2)',
+                        'result_value': f"{bmi:.1f}"
+                    })
+                    seq_num += 1
+                    
+                    # Add weight record
+                    omr_records.append({
+                        'subject_id': subject_id,
+                        'chartdate': admit_date,
+                        'seq_num': seq_num,
+                        'result_name': 'Weight (Lbs)',
+                        'result_value': f"{weight_lbs:.1f}"
+                    })
+                    seq_num += 1
+                    
+                    # Add height record
+                    omr_records.append({
+                        'subject_id': subject_id,
+                        'chartdate': admit_date,
+                        'seq_num': seq_num,
+                        'result_name': 'Height (Inches)',
+                        'result_value': f"{height:.1f}"
+                    })
+                    seq_num += 1
+        
+        self.synthetic_omr = pd.DataFrame(omr_records)
+        print(f"✓ Generated OMR records: {len(omr_records):,} measurements, {len(set(r['subject_id'] for r in omr_records)):,} patients")
+    
+    def generate_drgcodes(self):
+        """Generate DRG (Diagnosis Related Group) codes with severity/mortality"""
+        print("Generating DRG codes...")
+        
+        drg_records = []
+        
+        for _, admission in self.synthetic_admissions.iterrows():
+            subject_id = admission['subject_id']
+            hadm_id = admission['hadm_id']
+            has_pain = subject_id in self.pain_patients
+            has_oud = subject_id in self.oud_patients
+            
+            # DRG severity (1=Minor, 2=Moderate, 3=Major, 4=Extreme)
+            # Pain/OUD patients have higher severity
+            if has_oud:
+                # OUD patients: higher severity (mean 3.2)
+                severity = np.random.choice([2, 3, 4], p=[0.2, 0.5, 0.3])
+            elif has_pain:
+                # Pain patients: moderate-high severity (mean 2.8)
+                severity = np.random.choice([1, 2, 3, 4], p=[0.1, 0.3, 0.4, 0.2])
+            else:
+                # Non-pain: lower severity (mean 2.2)
+                severity = np.random.choice([1, 2, 3, 4], p=[0.2, 0.5, 0.2, 0.1])
+            
+            # DRG mortality risk (1=Minor, 2=Moderate, 3=Major, 4=Extreme)
+            # Correlated with severity but with variation
+            mortality = np.clip(severity + np.random.choice([-1, 0, 1], p=[0.2, 0.6, 0.2]), 1, 4)
+            
+            # Sample DRG code and description based on condition
+            if has_pain:
+                drg_options = [
+                    (460, 'SPINAL FUSION EXCEPT CERVICAL W/O MCC'),
+                    (461, 'BILATERAL OR MULTIPLE MAJOR JOINT PROCS OF LOWER EXTREMITY W/O MCC'),
+                    (552, 'MEDICAL BACK PROBLEMS W/O MCC'),
+                    (741, 'CHRONIC PAIN SYNDROME'),
+                ]
+            else:
+                drg_options = [
+                    (871, 'SEPTICEMIA OR SEVERE SEPSIS W/O MV >96 HOURS W MCC'),
+                    (189, 'PULMONARY EDEMA & RESPIRATORY FAILURE'),
+                    (291, 'HEART FAILURE & SHOCK W MCC'),
+                ]
+            
+            drg_code, description = random.choice(drg_options)
+            
+            drg_records.append({
+                'subject_id': subject_id,
+                'hadm_id': hadm_id,
+                'drg_type': 'MS',  # Medicare Severity
+                'drg_code': str(drg_code),
+                'description': description,
+                'drg_severity': float(severity),
+                'drg_mortality': float(mortality)
+            })
+        
+        self.synthetic_drgcodes = pd.DataFrame(drg_records)
+        avg_severity = self.synthetic_drgcodes['drg_severity'].mean()
+        print(f"✓ Generated DRG codes: {len(drg_records):,} admissions, avg severity {avg_severity:.1f}")
+    
+    def generate_transfers(self):
+        """Generate transfer records including ICU stays"""
+        print("Generating transfer records (ICU indicators)...")
+        
+        transfer_records = []
+        transfer_id = 1
+        icu_count = 0
+        
+        for _, admission in self.synthetic_admissions.iterrows():
+            subject_id = admission['subject_id']
+            hadm_id = admission['hadm_id']
+            admittime = pd.to_datetime(admission['admittime'])
+            dischtime = pd.to_datetime(admission['dischtime'])
+            has_pain = subject_id in self.pain_patients
+            has_oud = subject_id in self.oud_patients
+            
+            # ICU admission rate: higher for pain/OUD patients
+            if has_oud:
+                icu_rate = 0.50  # 50% of OUD admissions → ICU (overdose, complications)
+            elif has_pain:
+                icu_rate = 0.35  # 35% of pain admissions → ICU (post-surgical, trauma)
+            else:
+                icu_rate = 0.20  # 20% of other admissions → ICU
+            
+            goes_to_icu = np.random.random() < icu_rate
+            
+            if goes_to_icu:
+                icu_count += 1
+                # Determine ICU type
+                icu_types = [
+                    'Medical Intensive Care Unit (MICU)',
+                    'Surgical Intensive Care Unit (SICU)',
+                    'Cardiac Vascular Intensive Care Unit (CVICU)',
+                    'Medical/Surgical Intensive Care Unit (MICU/SICU)'
+                ]
+                
+                # Pain/surgical patients more likely to go to SICU
+                if has_pain:
+                    icu_unit = np.random.choice(icu_types, p=[0.2, 0.5, 0.2, 0.1])
+                else:
+                    icu_unit = np.random.choice(icu_types, p=[0.4, 0.2, 0.3, 0.1])
+                
+                # ICU stay duration (1-7 days typically)
+                icu_duration = np.random.randint(1, 8)
+                icu_intime = admittime + timedelta(hours=np.random.randint(1, 12))
+                icu_outtime = icu_intime + timedelta(days=icu_duration)
+                
+                # Ensure ICU outtime doesn't exceed discharge time
+                if icu_outtime > dischtime:
+                    icu_outtime = dischtime
+                
+                # Add ICU transfer record
+                transfer_records.append({
+                    'subject_id': subject_id,
+                    'hadm_id': hadm_id,
+                    'transfer_id': transfer_id,
+                    'eventtype': 'admit',
+                    'careunit': icu_unit,
+                    'intime': icu_intime.strftime('%Y-%m-%d %H:%M:%S'),
+                    'outtime': icu_outtime.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                transfer_id += 1
+                
+                # After ICU, transfer to regular ward
+                ward_intime = icu_outtime
+                ward_outtime = dischtime
+                ward_unit = np.random.choice(['Medicine', 'Surgery', 'Med/Surg'])
+                
+                transfer_records.append({
+                    'subject_id': subject_id,
+                    'hadm_id': hadm_id,
+                    'transfer_id': transfer_id,
+                    'eventtype': 'transfer',
+                    'careunit': ward_unit,
+                    'intime': ward_intime.strftime('%Y-%m-%d %H:%M:%S'),
+                    'outtime': ward_outtime.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                transfer_id += 1
+            else:
+                # No ICU - direct to regular ward
+                ward_unit = np.random.choice([
+                    'Medicine', 'Surgery', 'Med/Surg', 'Emergency Department', 'Observation'
+                ], p=[0.3, 0.2, 0.2, 0.2, 0.1])
+                
+                transfer_records.append({
+                    'subject_id': subject_id,
+                    'hadm_id': hadm_id,
+                    'transfer_id': transfer_id,
+                    'eventtype': 'admit',
+                    'careunit': ward_unit,
+                    'intime': admittime.strftime('%Y-%m-%d %H:%M:%S'),
+                    'outtime': dischtime.strftime('%Y-%m-%d %H:%M:%S')
+                })
+                transfer_id += 1
+        
+        self.synthetic_transfers = pd.DataFrame(transfer_records)
+        icu_rate = (icu_count / len(self.synthetic_admissions)) * 100
+        print(f"✓ Generated transfer records: {len(transfer_records):,} transfers, {icu_count:,} ICU stays ({icu_rate:.1f}%)")
         
     def save_data(self):
         """Save all synthetic data to compressed CSV files"""
-        print("Saving synthetic data...")
+        print("\nSaving synthetic data...")
         
         # Ensure output directory exists
         os.makedirs(self.output_dir, exist_ok=True)
@@ -474,15 +709,18 @@ class SyntheticDataGenerator:
             'patients.csv.gz': self.synthetic_patients,
             'admissions.csv.gz': self.synthetic_admissions,
             'diagnoses_icd.csv.gz': self.synthetic_diagnoses,
-            'prescriptions.csv.gz': self.synthetic_prescriptions
+            'prescriptions.csv.gz': self.synthetic_prescriptions,
+            'omr.csv.gz': self.synthetic_omr,
+            'drgcodes.csv.gz': self.synthetic_drgcodes,
+            'transfers.csv.gz': self.synthetic_transfers
         }
         
         for filename, df in datasets.items():
             filepath = os.path.join(self.output_dir, filename)
             df.to_csv(filepath, index=False, compression='gzip')
-            print(f"  Saved {filename}: {df.shape}")
+            print(f"  ✓ Saved {filename}: {df.shape[0]:,} rows × {df.shape[1]} cols")
         
-        print(f"\nAll synthetic data saved to: {self.output_dir}")
+        print(f"\n✓ All synthetic data saved to: {self.output_dir}")
         
     def generate_all(self):
         """Generate complete synthetic dataset"""
@@ -494,6 +732,9 @@ class SyntheticDataGenerator:
         self.generate_admissions()
         self.generate_diagnoses()
         self.generate_prescriptions()
+        self.generate_omr()
+        self.generate_drgcodes()
+        self.generate_transfers()
         self.save_data()
         
         print("\n" + "=" * 60)
@@ -503,6 +744,9 @@ class SyntheticDataGenerator:
         print(f"Total admissions: {len(self.synthetic_admissions):,}")
         print(f"Total diagnoses: {len(self.synthetic_diagnoses):,}")
         print(f"Total prescriptions: {len(self.synthetic_prescriptions):,}")
+        print(f"Total OMR records: {len(self.synthetic_omr):,}")
+        print(f"Total DRG codes: {len(self.synthetic_drgcodes):,}")
+        print(f"Total transfers: {len(self.synthetic_transfers):,}")
         
         # Calculate some statistics
         oud_diagnoses = self.synthetic_diagnoses[

@@ -389,6 +389,85 @@ def get_shap_feature_importance(
     return top_features, feature_importance
 
 
+def build_omr_features(omr: pd.DataFrame) -> pd.DataFrame:
+    """Extract BMI and related features from OMR data"""
+    if omr is None or omr.empty:
+        return pd.DataFrame(columns=["subject_id"])
+    
+    # Extract BMI records
+    bmi_records = omr[omr["result_name"] == "BMI (kg/m2)"].copy()
+    bmi_records["bmi_value"] = pd.to_numeric(bmi_records["result_value"], errors="coerce")
+    
+    # Aggregate BMI per patient (use most recent or mean)
+    bmi_agg = bmi_records.groupby("subject_id").agg(
+        bmi=("bmi_value", "mean"),
+        has_bmi=("bmi_value", "count")
+    ).reset_index()
+    
+    # Create BMI category features
+    bmi_agg["obesity_flag"] = (bmi_agg["bmi"] > 30).astype(int)
+    bmi_agg["morbid_obesity_flag"] = (bmi_agg["bmi"] > 40).astype(int)
+    bmi_agg["has_bmi"] = (bmi_agg["has_bmi"] > 0).astype(int)
+    
+    return bmi_agg
+
+
+def build_drg_features(drgcodes: pd.DataFrame) -> pd.DataFrame:
+    """Extract DRG severity and mortality features"""
+    if drgcodes is None or drgcodes.empty:
+        return pd.DataFrame(columns=["subject_id"])
+    
+    # Aggregate DRG features per patient
+    drg_agg = drgcodes.groupby("subject_id").agg(
+        avg_drg_severity=("drg_severity", "mean"),
+        max_drg_severity=("drg_severity", "max"),
+        avg_drg_mortality=("drg_mortality", "mean"),
+        max_drg_mortality=("drg_mortality", "max"),
+        n_admissions_with_drg=("hadm_id", "nunique")
+    ).reset_index()
+    
+    # Create high severity flag (severity >= 3)
+    drg_agg["high_severity_flag"] = (drg_agg["max_drg_severity"] >= 3).astype(int)
+    drg_agg["high_mortality_flag"] = (drg_agg["max_drg_mortality"] >= 3).astype(int)
+    
+    return drg_agg
+
+
+def build_icu_features(transfers: pd.DataFrame) -> pd.DataFrame:
+    """Extract ICU stay features from transfer records"""
+    if transfers is None or transfers.empty:
+        return pd.DataFrame(columns=["subject_id"])
+    
+    # Identify ICU transfers
+    icu_transfers = transfers[transfers["careunit"].str.contains("ICU", case=False, na=False)].copy()
+    
+    # Calculate ICU stay duration
+    if not icu_transfers.empty:
+        icu_transfers["intime"] = pd.to_datetime(icu_transfers["intime"], errors="coerce")
+        icu_transfers["outtime"] = pd.to_datetime(icu_transfers["outtime"], errors="coerce")
+        icu_transfers["icu_stay_hours"] = (
+            (icu_transfers["outtime"] - icu_transfers["intime"]).dt.total_seconds() / 3600.0
+        )
+    
+    # Aggregate ICU features per patient
+    icu_agg = icu_transfers.groupby("subject_id").agg(
+        n_icu_stays=("transfer_id", "count"),
+        total_icu_hours=("icu_stay_hours", "sum"),
+        n_icu_admissions=("hadm_id", "nunique")
+    ).reset_index()
+    
+    # Create ICU flags
+    icu_agg["has_icu_stay"] = (icu_agg["n_icu_stays"] > 0).astype(int)
+    icu_agg["total_icu_days"] = icu_agg["total_icu_hours"] / 24.0
+    
+    # Add flag for patients with NO ICU stays
+    all_patients = pd.DataFrame({"subject_id": transfers["subject_id"].unique()})
+    icu_agg = all_patients.merge(icu_agg, on="subject_id", how="left")
+    icu_agg = icu_agg.fillna(0)
+    
+    return icu_agg
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SHAP-based feature selection for two-model opioid audit system',
@@ -461,10 +540,34 @@ Examples:
     print("  → Reading prescriptions.csv.gz...")
     prescriptions = read_csv("prescriptions.csv.gz", SYNTHETIC_DATA_DIR)
     
+    # Load new feature files (if available)
+    omr = None
+    drgcodes = None
+    transfers = None
+    omr_path = os.path.join(SYNTHETIC_DATA_DIR, "omr.csv.gz")
+    drg_path = os.path.join(SYNTHETIC_DATA_DIR, "drgcodes.csv.gz")
+    transfer_path = os.path.join(SYNTHETIC_DATA_DIR, "transfers.csv.gz")
+    
+    if os.path.exists(omr_path):
+        print("  → Reading omr.csv.gz (BMI data)...")
+        omr = read_csv("omr.csv.gz", SYNTHETIC_DATA_DIR)
+    if os.path.exists(drg_path):
+        print("  → Reading drgcodes.csv.gz (DRG severity)...")
+        drgcodes = read_csv("drgcodes.csv.gz", SYNTHETIC_DATA_DIR)
+    if os.path.exists(transfer_path):
+        print("  → Reading transfers.csv.gz (ICU stays)...")
+        transfers = read_csv("transfers.csv.gz", SYNTHETIC_DATA_DIR)
+    
     print(f"\n  ✓ Patients: {patients.shape[0]:,} records")
     print(f"  ✓ Admissions: {admissions_raw.shape[0]:,} records")
     print(f"  ✓ Diagnoses: {diagnoses.shape[0]:,} records")
     print(f"  ✓ Prescriptions: {prescriptions.shape[0]:,} records")
+    if omr is not None:
+        print(f"  ✓ OMR: {omr.shape[0]:,} records (BMI data)")
+    if drgcodes is not None:
+        print(f"  ✓ DRG Codes: {drgcodes.shape[0]:,} records")
+    if transfers is not None:
+        print(f"  ✓ Transfers: {transfers.shape[0]:,} records")
 
     # Process and engineer features
     print("\n[2/7] Engineering features...")
@@ -480,6 +583,21 @@ Examples:
     y_oud = build_oud_label(diagnoses)
     print("  → Creating eligibility labels from pain diagnoses...")
     y_eligibility = build_opioid_eligibility_label(diagnoses)
+    
+    # Build new clinical features
+    bmi_features = None
+    drg_features = None
+    icu_features = None
+    
+    if omr is not None:
+        print("  → Extracting BMI features (obesity indicators)...")
+        bmi_features = build_omr_features(omr)
+    if drgcodes is not None:
+        print("  → Extracting DRG severity features...")
+        drg_features = build_drg_features(drgcodes)
+    if transfers is not None:
+        print("  → Extracting ICU stay features...")
+        icu_features = build_icu_features(transfers)
 
     # Combine all features
     print("  → Merging all feature tables...")
@@ -487,6 +605,17 @@ Examples:
          .merge(rx, on="subject_id", how="left")
          .merge(y_oud, on="subject_id", how="left")
          .merge(y_eligibility, on="subject_id", how="left"))
+    
+    # Merge new clinical features if available
+    if bmi_features is not None:
+        df = df.merge(bmi_features, on="subject_id", how="left")
+        print(f"    ✓ Added BMI features: {len(bmi_features):,} patients with BMI data")
+    if drg_features is not None:
+        df = df.merge(drg_features, on="subject_id", how="left")
+        print(f"    ✓ Added DRG features: {len(drg_features):,} patients with DRG data")
+    if icu_features is not None:
+        df = df.merge(icu_features, on="subject_id", how="left")
+        print(f"    ✓ Added ICU features: {len(icu_features):,} patients tracked")
 
     # Fill missing values
     df["race"] = df["race"].fillna("UNKNOWN")
@@ -496,6 +625,15 @@ Examples:
                 "any_opioid_flag"]:
         if col in df.columns:
             df[col] = df[col].fillna(0)
+    
+    # Fill new clinical feature columns
+    for col in ["bmi", "has_bmi", "obesity_flag", "morbid_obesity_flag",
+                "avg_drg_severity", "max_drg_severity", "avg_drg_mortality", "max_drg_mortality",
+                "high_severity_flag", "high_mortality_flag", "n_admissions_with_drg",
+                "n_icu_stays", "total_icu_hours", "total_icu_days", "n_icu_admissions", "has_icu_stay"]:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+    
     df["y_oud"] = df["y_oud"].fillna(0).astype(int)
     df["will_get_opioid_rx"] = df["any_opioid_flag"].fillna(0).astype(int)
     df["opioid_eligibility"] = df["opioid_eligibility"].fillna(0).astype(int)
