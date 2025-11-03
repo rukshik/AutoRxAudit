@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './PrescriptionForm.css';
 
-function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
+function PrescriptionForm({ user, onLogout, onNavigateToHistory, selectedAudit, onAuditActionComplete }) {
   const [patients, setPatients] = useState([]);
   const [drugs, setDrugs] = useState({ opioids: [], non_opioids: [] });
   const [selectedPatient, setSelectedPatient] = useState('');
@@ -13,6 +13,15 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
   useEffect(() => {
     loadPatientsAndDrugs();
   }, []);
+
+  useEffect(() => {
+    // If an audit is selected from history, show it as the audit result
+    if (selectedAudit) {
+      setAuditResult(selectedAudit);
+      setSelectedPatient(selectedAudit.patient_id);
+      setSelectedDrug(selectedAudit.drug_name);
+    }
+  }, [selectedAudit]);
 
   const loadPatientsAndDrugs = async () => {
     try {
@@ -64,14 +73,7 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          patient_id: auditResult.patient_id,
-          drug_name: selectedDrug,
-          eligibility_score: auditResult.eligibility_score,
-          eligibility_prediction: auditResult.eligibility_prediction,
-          oud_risk_score: auditResult.oud_risk_score,
-          oud_risk_prediction: auditResult.oud_risk_prediction,
-          flagged: auditResult.flagged,
-          flag_reason: auditResult.flag_reason,
+          audit_id: auditResult.audit_id,
           action: action,
           action_reason: actionReason || null,
         }),
@@ -83,6 +85,13 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
         setSelectedPatient('');
         setSelectedDrug('');
         setActionReason('');
+        
+        // If this was from audit history, navigate back to history
+        if (selectedAudit && onAuditActionComplete) {
+          setTimeout(() => {
+            onAuditActionComplete();
+          }, 500);
+        }
       }
     } catch (err) {
       console.error('Error recording action:', err);
@@ -114,8 +123,22 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
 
       <div className="main-content">
         <div className="form-section">
-          <h2>Prescription Audit Form</h2>
+          {selectedAudit ? (
+            <div className="audit-review-header">
+              <h2>Review Pending Audit</h2>
+              <button 
+                onClick={onNavigateToHistory} 
+                className="back-button"
+                type="button"
+              >
+                ← Back to History
+              </button>
+            </div>
+          ) : (
+            <h2>Prescription Audit Form</h2>
+          )}
           
+          {!selectedAudit && (
           <form onSubmit={handleSubmit}>
             <div className="form-group">
               <label htmlFor="patient">Patient ID</label>
@@ -166,6 +189,7 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory }) {
               {loading ? 'Auditing...' : 'Audit Prescription'}
             </button>
           </form>
+          )}
         </div>
 
         {auditResult && (

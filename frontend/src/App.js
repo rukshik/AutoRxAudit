@@ -7,6 +7,7 @@ import './App.css';
 function App() {
   const [user, setUser] = useState(null);
   const [currentView, setCurrentView] = useState('form'); // 'form' or 'history'
+  const [selectedAudit, setSelectedAudit] = useState(null);
 
   useEffect(() => {
     // Check if user is already logged in
@@ -33,11 +34,18 @@ function App() {
   };
 
   const navigateToForm = () => {
+    setSelectedAudit(null);
     setCurrentView('form');
   };
 
   const navigateToHistory = () => {
+    setSelectedAudit(null);
     setCurrentView('history');
+  };
+
+  const navigateToAudit = (audit) => {
+    setSelectedAudit(audit);
+    setCurrentView('form');
   };
 
   // If not logged in, show login page
@@ -53,12 +61,15 @@ function App() {
           user={user} 
           onLogout={handleLogout} 
           onNavigateToHistory={navigateToHistory}
+          selectedAudit={selectedAudit}
+          onAuditActionComplete={navigateToHistory}
         />
       ) : (
         <AuditHistory 
           user={user} 
           onLogout={handleLogout} 
           onNavigateToForm={navigateToForm}
+          onNavigateToAudit={navigateToAudit}
         />
       )}
     </div>

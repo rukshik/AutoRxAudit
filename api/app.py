@@ -86,6 +86,7 @@ class AuditResponse(BaseModel):
     flagged: bool = Field(..., description="Whether prescription should be flagged")
     patient_id: str
     prescription_id: Optional[str]
+    audit_id: Optional[int] = None
     
     # Model predictions
     eligibility_score: float = Field(..., description="Eligibility probability (0-1)")
@@ -121,16 +122,8 @@ class LoginResponse(BaseModel):
 
 
 class AuditActionRequest(BaseModel):
-    """User action on audit result."""
-    audit_id: Optional[int] = None
-    patient_id: str
-    drug_name: str
-    eligibility_score: float
-    eligibility_prediction: int
-    oud_risk_score: float
-    oud_risk_prediction: int
-    flagged: bool
-    flag_reason: str
+    """Pharmacist action on audit result."""
+    audit_id: int  # Required - audit log ID to update
     action: str  # 'APPROVED', 'DENIED', 'OVERRIDE_APPROVE', 'OVERRIDE_DENY'
     action_reason: Optional[str] = None
 
@@ -144,16 +137,16 @@ class AuditActionResponse(BaseModel):
 
 class AuditHistoryItem(BaseModel):
     """Audit history item."""
-    action_id: int
+    audit_id: int  # Changed from action_id to audit_id
     patient_id: str
     drug_name: str
-    user_email: str
-    user_name: str
+    user_email: Optional[str] = None  # Optional - None if not reviewed yet
+    user_name: Optional[str] = None  # Optional - None if not reviewed yet
     flagged: bool
     eligibility_score: float
     oud_risk_score: float
-    action: str
-    action_reason: Optional[str]
+    action: Optional[str] = None  # Optional - None if not reviewed yet
+    action_reason: Optional[str] = None
     created_at: str
 
 
@@ -407,18 +400,50 @@ async def audit_prescription(request: PrescriptionRequest):
     # 2. If NOT an opioid, auto-approve (no OUD risk)
     if not is_opioid:
         print(f"✓ Non-opioid drug '{request.drug_name}' - auto-approved (no risk assessment)")
-        return AuditResponse(
-            flagged=False,
-            patient_id=request.patient_id,
-            prescription_id=request.prescription_id or f"RX_{request.patient_id}",
-            eligibility_score=1.0,
-            eligibility_prediction=1,
-            oud_risk_score=0.0,
-            oud_risk_prediction=0,
-            flag_reason="Non-opioid prescription - no OUD risk assessment required",
-            recommendation="APPROVED: Non-opioid medication",
-            audited_at=datetime.now().isoformat()
-        )
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Create prescription record
+            cursor.execute("""
+                INSERT INTO prescription_requests (patient_id, drug_name, status)
+                VALUES (%s, %s, 'APPROVED')
+                RETURNING prescription_id
+            """, (request.patient_id, request.drug_name))
+            prescription_id = cursor.fetchone()['prescription_id']
+            
+            # Log audit (no risk assessment for non-opioids)
+            cursor.execute("""
+                INSERT INTO audit_logs (
+                    prescription_id, patient_id, drug_name,
+                    eligibility_score, eligibility_prediction,
+                    oud_risk_score, oud_risk_prediction,
+                    flagged, flag_reason, recommendation
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING audit_id
+            """, (
+                prescription_id, request.patient_id, request.drug_name,
+                1.0, 1, 0.0, 0, False,
+                "Non-opioid prescription - no OUD risk assessment required",
+                "APPROVED: Non-opioid medication"
+            ))
+            audit_id = cursor.fetchone()['audit_id']
+            conn.commit()
+            cursor.close()
+            
+            return AuditResponse(
+                flagged=False,
+                patient_id=request.patient_id,
+                prescription_id=str(prescription_id),
+                audit_id=audit_id,
+                eligibility_score=1.0,
+                eligibility_prediction=1,
+                oud_risk_score=0.0,
+                oud_risk_prediction=0,
+                flag_reason="Non-opioid prescription - no OUD risk assessment required",
+                recommendation="APPROVED: Non-opioid medication",
+                audited_at=datetime.now().isoformat()
+            )
     
     # 3. For OPIOIDS, perform full risk assessment
     print(f"Opioid drug '{request.drug_name}' detected - performing risk assessment...")
@@ -452,14 +477,24 @@ async def audit_prescription(request: PrescriptionRequest):
     oud_score, oud_pred = run_inference(oud_model, oud_features)
     
     with get_db() as conn:
+        cursor = conn.cursor()
         
-        # 9. Determine if prescription should be flagged
+        # 9. Create prescription record
+        cursor.execute("""
+            INSERT INTO prescription_requests (patient_id, drug_name, status)
+            VALUES (%s, %s, 'PENDING')
+            RETURNING prescription_id
+        """, (request.patient_id, request.drug_name))
+        prescription_id = cursor.fetchone()['prescription_id']
+        conn.commit()
+        
+        # 10. Determine if prescription should be flagged
         # Flag if: NOT eligible (pred=0) OR high OUD risk (pred=1)
         not_eligible = (eligibility_pred == 0)
         high_oud_risk = (oud_pred == 1)
         flagged = not_eligible or high_oud_risk
         
-        # 10. Generate explanation
+        # 11. Generate explanation
         reasons = []
         if not_eligible:
             reasons.append(f"No clinical need for opioids (eligibility: {eligibility_score:.1%})")
@@ -473,28 +508,31 @@ async def audit_prescription(request: PrescriptionRequest):
             flag_reason = "Patient eligible with acceptable OUD risk"
             recommendation = "APPROVED: Opioid prescription meets clinical criteria"
         
-        # 11. Log audit decision with calculated features
-        import json
-        all_features = {**eligibility_features_dict, **oud_features_dict}
+        # 12. Log audit with AI results (pharmacist decision will be added later)
+        cursor.execute("""
+            INSERT INTO audit_logs (
+                prescription_id, patient_id, drug_name,
+                eligibility_score, eligibility_prediction,
+                oud_risk_score, oud_risk_prediction,
+                flagged, flag_reason, recommendation
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING audit_id
+        """, (
+            prescription_id, request.patient_id, request.drug_name,
+            eligibility_score, eligibility_pred,
+            oud_score, oud_pred,
+            flagged, flag_reason, recommendation
+        ))
+        audit_id = cursor.fetchone()['audit_id']
+        conn.commit()
+        cursor.close()
         
-        audit_data = {
-            'patient_id': request.patient_id,
-            'prescription_id': request.prescription_id,
-            'flagged': flagged,
-            'eligibility_score': eligibility_score,
-            'eligibility_prediction': eligibility_pred,
-            'oud_risk_score': oud_score,
-            'oud_risk_prediction': oud_pred,
-            'flag_reason': flag_reason,
-            'calculated_features': json.dumps(all_features)
-        }
-        log_audit(conn, audit_data)
-        
-        # 12. Return response
+        # 13. Return response
         return AuditResponse(
             flagged=flagged,
             patient_id=request.patient_id,
-            prescription_id=request.prescription_id,
+            prescription_id=str(prescription_id),
+            audit_id=audit_id,
             eligibility_score=eligibility_score,
             eligibility_prediction=eligibility_pred,
             oud_risk_score=oud_score,
@@ -667,42 +705,57 @@ async def record_audit_action(
     request: AuditActionRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Record user action on prescription audit (approve/deny/override)."""
+    """Record pharmacist decision on prescription audit (approve/deny/override)."""
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # Insert audit action
+        # Update audit_logs with pharmacist decision
         cursor.execute("""
-            INSERT INTO audit_actions (
-                user_id, patient_id, drug_name,
-                flagged, eligibility_score, eligibility_prediction,
-                oud_risk_score, oud_risk_prediction, flag_reason,
-                action, action_reason
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-            ) RETURNING action_id
+            UPDATE audit_logs
+            SET reviewed_by = %s,
+                action = %s,
+                action_reason = %s,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE audit_id = %s
+            RETURNING audit_id
         """, (
             current_user['user_id'],
-            request.patient_id,
-            request.drug_name,
-            request.flagged,
-            request.eligibility_score,
-            request.eligibility_prediction,
-            request.oud_risk_score,
-            request.oud_risk_prediction,
-            request.flag_reason,
             request.action,
-            request.action_reason
+            request.action_reason,
+            request.audit_id
         ))
         
-        action_id = cursor.fetchone()['action_id']
+        result = cursor.fetchone()
+        if not result:
+            cursor.close()
+            raise HTTPException(status_code=404, detail=f"Audit ID {request.audit_id} not found")
+        
+        audit_id = result['audit_id']
+        
+        # Update prescription status based on action
+        status_map = {
+            'APPROVED': 'APPROVED',
+            'OVERRIDE_APPROVE': 'APPROVED',
+            'DENIED': 'DENIED',
+            'OVERRIDE_DENY': 'DENIED'
+        }
+        new_status = status_map.get(request.action, 'PENDING')
+        
+        cursor.execute("""
+            UPDATE prescription_requests
+            SET status = %s
+            WHERE prescription_id = (
+                SELECT prescription_id FROM audit_logs WHERE audit_id = %s
+            )
+        """, (new_status, audit_id))
+        
         conn.commit()
         cursor.close()
         
         return {
-            "action_id": action_id,
+            "action_id": audit_id,
             "success": True,
-            "message": f"Audit action '{request.action}' recorded successfully"
+            "message": f"Pharmacist decision '{request.action}' recorded successfully"
         }
 
 
@@ -717,41 +770,49 @@ async def get_audit_history(
         
         cursor.execute("""
             SELECT 
-                aa.action_id,
-                aa.patient_id,
-                aa.drug_name,
-                u.email as user_email,
-                u.full_name as user_name,
-                aa.flagged,
-                aa.eligibility_score,
-                aa.oud_risk_score,
-                aa.action,
-                aa.action_reason,
-                aa.created_at
-            FROM audit_actions aa
-            JOIN users u ON aa.user_id = u.user_id
-            ORDER BY aa.created_at DESC
+                al.audit_id,
+                al.prescription_id,
+                al.patient_id,
+                al.drug_name,
+                al.eligibility_score,
+                al.eligibility_prediction,
+                al.oud_risk_score,
+                al.oud_risk_prediction,
+                al.flagged,
+                al.flag_reason,
+                al.recommendation,
+                al.audited_at,
+                al.reviewed_by,
+                al.action,
+                al.action_reason,
+                al.reviewed_at,
+                u.full_name as clinician_name,
+                u.email as clinician_email,
+                u.role as clinician_role
+            FROM audit_logs al
+            LEFT JOIN users u ON al.reviewed_by = u.user_id
+            ORDER BY al.audited_at DESC
             LIMIT %s
         """, (limit,))
         
-        actions = cursor.fetchall()
+        audits = cursor.fetchall()
         cursor.close()
         
         return [
             {
-                "action_id": a['action_id'],
+                "audit_id": a['audit_id'],
                 "patient_id": a['patient_id'],
                 "drug_name": a['drug_name'],
-                "user_email": a['user_email'],
-                "user_name": a['user_name'],
+                "user_email": a['clinician_email'] if a['clinician_email'] else None,
+                "user_name": a['clinician_name'] if a['clinician_name'] else None,
                 "flagged": a['flagged'],
                 "eligibility_score": float(a['eligibility_score']),
                 "oud_risk_score": float(a['oud_risk_score']),
-                "action": a['action'],
+                "action": a['action'] if a['action'] else None,
                 "action_reason": a['action_reason'],
-                "created_at": a['created_at'].isoformat() if a['created_at'] else None
+                "created_at": a['audited_at'].isoformat() if a['audited_at'] else None
             }
-            for a in actions
+            for a in audits
         ]
 
 

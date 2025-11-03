@@ -259,3 +259,18 @@
     font-size: 0.7rem;
   }
 }
+
+/* Clickable pending rows */
+.pending-clickable:hover {
+  background-color: #f0f8ff !important;
+  cursor: pointer;
+}
+
+.pending-clickable:hover td {
+  background-color: #f0f8ff !important;
+}
+
+.pending-badge {
+  font-size: 0.85rem;
+  color: #f39c12;
+}

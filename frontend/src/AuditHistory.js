@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AuditHistory.css';
 
-function AuditHistory({ user, onLogout, onNavigateToForm }) {
+function AuditHistory({ user, onLogout, onNavigateToForm, onNavigateToAudit }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -67,6 +67,13 @@ function AuditHistory({ user, onLogout, onNavigateToForm }) {
     }
   };
 
+  const handleRowClick = (audit) => {
+    // Navigate to audit action page with the audit data
+    if (onNavigateToAudit) {
+      onNavigateToAudit(audit);
+    }
+  };
+
   return (
     <div className="history-container">
       <header className="app-header">
@@ -105,21 +112,32 @@ function AuditHistory({ user, onLogout, onNavigateToForm }) {
               <table className="history-table">
                 <thead>
                   <tr>
+                    <th>Audit ID</th>
+                    <th>Rx ID</th>
                     <th>Date & Time</th>
                     <th>Patient ID</th>
                     <th>Drug</th>
                     <th>Eligibility</th>
                     <th>OUD Risk</th>
                     <th>Flagged</th>
+                    <th>Flag Reason</th>
                     <th>Action</th>
-                    <th>Clinician</th>
-                    <th>Reason</th>
+                    <th>Reviewed By</th>
+                    <th>Reviewed At</th>
+                    <th>Action Reason</th>
                   </tr>
                 </thead>
                 <tbody>
                   {history.map((record) => (
-                    <tr key={record.audit_id}>
-                      <td className="date-cell">{formatDate(record.created_at)}</td>
+                    <tr 
+                      key={record.audit_id}
+                      onClick={() => !record.action && handleRowClick(record)}
+                      className={!record.action ? 'pending-clickable' : ''}
+                      style={{cursor: !record.action ? 'pointer' : 'default'}}
+                    >
+                      <td className="audit-id-cell">{record.audit_id}</td>
+                      <td className="prescription-id-cell">{record.prescription_id}</td>
+                      <td className="date-cell">{formatDate(record.audited_at)}</td>
                       <td className="patient-cell">{record.patient_id}</td>
                       <td className="drug-cell">{record.drug_name}</td>
                       <td className="score-cell">
@@ -139,12 +157,22 @@ function AuditHistory({ user, onLogout, onNavigateToForm }) {
                           <span className="flag-no">✅ No</span>
                         )}
                       </td>
+                      <td className="flag-reason-cell">{record.flag_reason || '-'}</td>
                       <td className="action-cell">
-                        <span className={`action-badge ${getActionClass(record.action)}`}>
-                          {getActionLabel(record.action)}
-                        </span>
+                        {record.action ? (
+                          <span className={`action-badge ${getActionClass(record.action)}`}>
+                            {getActionLabel(record.action)}
+                          </span>
+                        ) : (
+                          <span className="pending-badge">⏳ Pending - Click to Review</span>
+                        )}
                       </td>
-                      <td className="clinician-cell">{record.clinician_name}</td>
+                      <td className="clinician-cell">
+                        {record.clinician_name || <em>Not reviewed</em>}
+                      </td>
+                      <td className="reviewed-date-cell">
+                        {record.reviewed_at ? formatDate(record.reviewed_at) : '-'}
+                      </td>
                       <td className="reason-cell">
                         {record.action_reason || <em>No reason provided</em>}
                       </td>
