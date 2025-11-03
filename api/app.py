@@ -22,6 +22,8 @@ from datetime import datetime
 from contextlib import contextmanager
 from dotenv import load_dotenv
 from feature_calculator import FeatureCalculator
+import httpx
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -34,6 +36,9 @@ DB_CONFIG = {
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', 'postgres')
 }
+
+# Blockchain service configuration
+BLOCKCHAIN_SERVICE_URL = os.getenv('BLOCKCHAIN_SERVICE_URL', 'http://localhost:8001')
 
 MODEL_DIR = '../ai-layer/model'
 ELIGIBILITY_MODEL_PATH = os.path.join(MODEL_DIR, 'results/50000_v3/dnn_eligibility_model.pth')
@@ -278,6 +283,61 @@ async def get_current_user(session_id: str = Depends(lambda: None)):
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+async def send_audit_to_blockchain(audit_data: Dict) -> Optional[Dict]:
+    """Send audit record to blockchain service."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{BLOCKCHAIN_SERVICE_URL}/record-audit",
+                json={
+                    "audit_id": audit_data['audit_id'],
+                    "prescription_id": audit_data['prescription_id'],
+                    "patient_id": audit_data['patient_id'],
+                    "drug_name": audit_data['drug_name'],
+                    "eligibility_score": int(audit_data['eligibility_score'] * 100),
+                    "eligibility_prediction": audit_data['eligibility_prediction'],
+                    "oud_risk_score": int(audit_data['oud_risk_score'] * 100),
+                    "oud_risk_prediction": audit_data['oud_risk_prediction'],
+                    "flagged": audit_data['flagged'],
+                    "flag_reason": audit_data['flag_reason'],
+                    "recommendation": audit_data['recommendation']
+                }
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"⚠️  Blockchain recording failed: {response.text}")
+                return None
+    except Exception as e:
+        print(f"⚠️  Blockchain service unavailable: {e}")
+        return None
+
+
+async def send_pharmacist_action_to_blockchain(action_data: Dict) -> Optional[Dict]:
+    """Send pharmacist action to blockchain service."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{BLOCKCHAIN_SERVICE_URL}/record-pharmacist-action",
+                json={
+                    "audit_id": action_data['audit_id'],
+                    "action": action_data['action'],
+                    "action_reason": action_data['action_reason'],
+                    "reviewed_by": str(action_data['reviewed_by']),
+                    "reviewed_by_name": action_data['reviewed_by_name'],
+                    "reviewed_by_email": action_data['reviewed_by_email']
+                }
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"⚠️  Blockchain recording failed: {response.text}")
+                return None
+    except Exception as e:
+        print(f"⚠️  Blockchain service unavailable: {e}")
+        return None
+
 
 def get_patient_features(conn, patient_id: str) -> Dict:
     """Fetch patient features from database."""
@@ -527,7 +587,25 @@ async def audit_prescription(request: PrescriptionRequest):
         conn.commit()
         cursor.close()
         
-        # 13. Return response
+        # 13. Send audit to blockchain (async, non-blocking)
+        blockchain_result = await send_audit_to_blockchain({
+            'audit_id': audit_id,
+            'prescription_id': prescription_id,
+            'patient_id': request.patient_id,
+            'drug_name': request.drug_name,
+            'eligibility_score': eligibility_score,
+            'eligibility_prediction': eligibility_pred,
+            'oud_risk_score': oud_score,
+            'oud_risk_prediction': oud_pred,
+            'flagged': flagged,
+            'flag_reason': flag_reason,
+            'recommendation': recommendation
+        })
+        
+        if blockchain_result:
+            print(f"✓ Audit recorded on blockchain: {blockchain_result.get('transaction_hash', 'N/A')}")
+        
+        # 14. Return response
         return AuditResponse(
             flagged=flagged,
             patient_id=request.patient_id,
@@ -752,6 +830,19 @@ async def record_audit_action(
         conn.commit()
         cursor.close()
         
+        # Send pharmacist action to blockchain (async, non-blocking)
+        blockchain_result = await send_pharmacist_action_to_blockchain({
+            'audit_id': audit_id,
+            'action': request.action,
+            'action_reason': request.action_reason or '',
+            'reviewed_by': current_user['user_id'],
+            'reviewed_by_name': current_user.get('full_name', ''),
+            'reviewed_by_email': current_user.get('email', '')
+        })
+        
+        if blockchain_result:
+            print(f"✓ Pharmacist action recorded on blockchain: {blockchain_result.get('transaction_hash', 'N/A')}")
+        
         return {
             "action_id": audit_id,
             "success": True,
@@ -814,6 +905,40 @@ async def get_audit_history(
             }
             for a in audits
         ]
+
+
+@app.get("/api/blockchain-audits")
+async def get_blockchain_audits(limit: int = 50, current_user: dict = Depends(get_current_user)):
+    """Get all audit records from blockchain."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{BLOCKCHAIN_SERVICE_URL}/audit-records/all?limit={limit}")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise HTTPException(status_code=503, detail="Blockchain service unavailable")
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Blockchain service not running")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch blockchain records: {str(e)}")
+
+
+@app.get("/api/blockchain-audit/{blockchain_id}")
+async def get_blockchain_audit(blockchain_id: int, current_user: dict = Depends(get_current_user)):
+    """Get specific audit record from blockchain by blockchain ID."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{BLOCKCHAIN_SERVICE_URL}/audit-record/{blockchain_id}")
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Blockchain record not found")
+            else:
+                raise HTTPException(status_code=503, detail="Blockchain service unavailable")
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail="Blockchain service not running")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch blockchain record: {str(e)}")
 
 
 if __name__ == "__main__":

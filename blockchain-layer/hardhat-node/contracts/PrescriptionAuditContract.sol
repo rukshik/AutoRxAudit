@@ -8,282 +8,215 @@ pragma solidity ^0.8.19;
  */
 contract PrescriptionAuditContract {
     
-    // Struct to represent a prescription record
-    struct PrescriptionRecord {
+    // Input struct to avoid stack too deep error in recordAudit function
+    struct AuditInput {
+        uint256 auditId;
         uint256 prescriptionId;
         string patientId;
-        string doctorId;
-        string pharmacyId;
         string drugName;
-        uint256 quantity;
-        uint256 timestamp;
-        uint8 riskScore; // 0-100 risk score from AI
-        string riskFactors; // JSON string of risk factors
-        bool isFlagged;
-        bool isOverridden;
-        string overrideReason;
-        string overrideBy; // Doctor/pharmacist who overrode
-        uint256 overrideTimestamp;
+        uint8 eligibilityScore;
+        uint8 eligibilityPrediction;
+        uint8 oudRiskScore;
+        uint8 oudRiskPrediction;
+        bool flagged;
+        string flagReason;
+        string recommendation;
     }
     
-    // Events for tracking actions
-    event PrescriptionFlagged(
-        uint256 indexed prescriptionId,
-        string patientId,
-        string doctorId,
-        string pharmacyId,
-        uint8 riskScore,
-        string riskFactors
-    );
+    // Struct to represent a prescription audit record (matches audit_logs table)
+    struct PrescriptionRecord {
+        uint256 blockchainId;        // Blockchain-specific ID
+        uint256 auditId;             // audit_id from database
+        uint256 prescriptionId;      // prescription_id from database
+        string patientId;            // patient_id
+        string drugName;             // drug_name
+        uint8 eligibilityScore;      // eligibility_score (0-100)
+        uint8 eligibilityPrediction; // eligibility_prediction (0 or 1)
+        uint8 oudRiskScore;          // oud_risk_score (0-100)
+        uint8 oudRiskPrediction;     // oud_risk_prediction (0 or 1)
+        bool flagged;                // flagged
+        string flagReason;           // flag_reason
+        string recommendation;       // recommendation
+        uint256 auditedAt;           // audited_at timestamp
+        string reviewedBy;           // reviewed_by (user_id as string)
+        string reviewedByName;       // reviewer's full name
+        string reviewedByEmail;      // reviewer's email
+        string action;               // action (APPROVED, DENIED, etc.)
+        string actionReason;         // action_reason
+        uint256 reviewedAt;          // reviewed_at timestamp
+    }
     
-    event PrescriptionOverridden(
-        uint256 indexed prescriptionId,
-        string overrideBy,
-        string overrideReason,
+    // Events for tracking actions (matches database workflow)
+    event AuditRecorded(
+        uint256 indexed blockchainId,
+        uint256 indexed auditId,
+        uint256 prescriptionId,
+        string patientId,
+        bool flagged,
+        uint8 oudRiskScore,
         uint256 timestamp
     );
     
-    event PrescriptionVerified(
-        uint256 indexed prescriptionId,
-        string verifiedBy,
+    event PharmacistActionRecorded(
+        uint256 indexed blockchainId,
+        uint256 indexed auditId,
+        string action,
+        string reviewedBy,
         uint256 timestamp
     );
     
     // State variables
     address public owner;
-    mapping(uint256 => PrescriptionRecord) public prescriptions;
-    mapping(string => uint256[]) public patientPrescriptions; // patientId => prescriptionIds
-    mapping(string => uint256[]) public doctorPrescriptions; // doctorId => prescriptionIds
-    mapping(string => uint256[]) public pharmacyPrescriptions; // pharmacyId => prescriptionIds
+    mapping(uint256 => PrescriptionRecord) public auditRecords; // blockchainId => record
+    mapping(uint256 => uint256) public auditIdToBlockchainId;   // auditId => blockchainId
+    mapping(string => uint256[]) public patientAudits;          // patientId => blockchainIds
     
-    uint256 public prescriptionCounter = 0;
-    uint256 public constant RISK_THRESHOLD = 70; // Flag prescriptions with risk score >= 70
+    uint256 public recordCounter = 0;
     
     // Access control
-    mapping(address => bool) public authorizedDoctors;
-    mapping(address => bool) public authorizedPharmacists;
-    mapping(address => bool) public authorizedAuditors;
-    
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner can call this function");
-        _;
-    }
-    
-    modifier onlyAuthorized() {
-        require(
-            authorizedDoctors[msg.sender] || 
-            authorizedPharmacists[msg.sender] || 
-            authorizedAuditors[msg.sender] || 
-            msg.sender == owner,
-            "Not authorized"
-        );
-        _;
-    }
-    
     constructor() {
         owner = msg.sender;
     }
     
     /**
-     * @dev Add authorized doctor
+     * @dev Record audit result from main API (after AI model evaluation)
+     * @param input Struct containing all audit data
      */
-    function addAuthorizedDoctor(address doctor) external onlyOwner {
-        authorizedDoctors[doctor] = true;
-    }
-    
-    /**
-     * @dev Add authorized pharmacist
-     */
-    function addAuthorizedPharmacist(address pharmacist) external onlyOwner {
-        authorizedPharmacists[pharmacist] = true;
-    }
-    
-    /**
-     * @dev Add authorized auditor
-     */
-    function addAuthorizedAuditor(address auditor) external onlyOwner {
-        authorizedAuditors[auditor] = true;
-    }
-    
-    /**
-     * @dev Record a flagged prescription
-     * @param patientId Patient identifier
-     * @param doctorId Doctor identifier
-     * @param pharmacyId Pharmacy identifier
-     * @param drugName Name of the prescribed drug
-     * @param quantity Quantity prescribed
-     * @param riskScore AI-calculated risk score (0-100)
-     * @param riskFactors JSON string of risk factors
-     */
-    function recordFlaggedPrescription(
-        string memory patientId,
-        string memory doctorId,
-        string memory pharmacyId,
-        string memory drugName,
-        uint256 quantity,
-        uint8 riskScore,
-        string memory riskFactors
-    ) external onlyAuthorized returns (uint256) {
-        require(riskScore >= RISK_THRESHOLD, "Risk score below threshold");
+    function recordAudit(AuditInput memory input) external returns (uint256) {
+        recordCounter++;
+        uint256 blockchainId = recordCounter;
         
-        prescriptionCounter++;
-        uint256 prescriptionId = prescriptionCounter;
-        
-        PrescriptionRecord memory newPrescription = PrescriptionRecord({
-            prescriptionId: prescriptionId,
-            patientId: patientId,
-            doctorId: doctorId,
-            pharmacyId: pharmacyId,
-            drugName: drugName,
-            quantity: quantity,
-            timestamp: block.timestamp,
-            riskScore: riskScore,
-            riskFactors: riskFactors,
-            isFlagged: true,
-            isOverridden: false,
-            overrideReason: "",
-            overrideBy: "",
-            overrideTimestamp: 0
+        PrescriptionRecord memory newRecord = PrescriptionRecord({
+            blockchainId: blockchainId,
+            auditId: input.auditId,
+            prescriptionId: input.prescriptionId,
+            patientId: input.patientId,
+            drugName: input.drugName,
+            eligibilityScore: input.eligibilityScore,
+            eligibilityPrediction: input.eligibilityPrediction,
+            oudRiskScore: input.oudRiskScore,
+            oudRiskPrediction: input.oudRiskPrediction,
+            flagged: input.flagged,
+            flagReason: input.flagReason,
+            recommendation: input.recommendation,
+            auditedAt: block.timestamp,
+            reviewedBy: "",
+            reviewedByName: "",
+            reviewedByEmail: "",
+            action: "",
+            actionReason: "",
+            reviewedAt: 0
         });
         
-        prescriptions[prescriptionId] = newPrescription;
-        patientPrescriptions[patientId].push(prescriptionId);
-        doctorPrescriptions[doctorId].push(prescriptionId);
-        pharmacyPrescriptions[pharmacyId].push(prescriptionId);
+        auditRecords[blockchainId] = newRecord;
+        auditIdToBlockchainId[input.auditId] = blockchainId;
+        patientAudits[input.patientId].push(blockchainId);
         
-        emit PrescriptionFlagged(
-            prescriptionId,
-            patientId,
-            doctorId,
-            pharmacyId,
-            riskScore,
-            riskFactors
-        );
-        
-        return prescriptionId;
-    }
-    
-    /**
-     * @dev Override a flagged prescription
-     * @param prescriptionId ID of the prescription to override
-     * @param overrideReason Reason for override
-     * @param overrideBy Identifier of person overriding
-     */
-    function overridePrescription(
-        uint256 prescriptionId,
-        string memory overrideReason,
-        string memory overrideBy
-    ) external onlyAuthorized {
-        require(prescriptions[prescriptionId].prescriptionId != 0, "Prescription not found");
-        require(prescriptions[prescriptionId].isFlagged, "Prescription not flagged");
-        require(!prescriptions[prescriptionId].isOverridden, "Already overridden");
-        
-        prescriptions[prescriptionId].isOverridden = true;
-        prescriptions[prescriptionId].overrideReason = overrideReason;
-        prescriptions[prescriptionId].overrideBy = overrideBy;
-        prescriptions[prescriptionId].overrideTimestamp = block.timestamp;
-        
-        emit PrescriptionOverridden(
-            prescriptionId,
-            overrideBy,
-            overrideReason,
+        emit AuditRecorded(
+            blockchainId,
+            input.auditId,
+            input.prescriptionId,
+            input.patientId,
+            input.flagged,
+            input.oudRiskScore,
             block.timestamp
         );
+        
+        return blockchainId;
     }
     
     /**
-     * @dev Verify a prescription (for pharmacy use)
-     * @param prescriptionId ID of the prescription to verify
-     * @param verifiedBy Identifier of person verifying
+     * @dev Record pharmacist action (approve/deny/override)
+     * Creates a new immutable record for each action to maintain full audit trail
+     * @param auditId audit_id from database
+     * @param action action (APPROVED, DENIED, OVERRIDE_APPROVE, OVERRIDE_DENY)
+     * @param actionReason action_reason
+     * @param reviewedBy reviewed_by (user_id as string)
+     * @param reviewedByName reviewer's full name
+     * @param reviewedByEmail reviewer's email
      */
-    function verifyPrescription(
-        uint256 prescriptionId,
-        string memory verifiedBy
-    ) external onlyAuthorized {
-        require(prescriptions[prescriptionId].prescriptionId != 0, "Prescription not found");
+    function recordPharmacistAction(
+        uint256 auditId,
+        string memory action,
+        string memory actionReason,
+        string memory reviewedBy,
+        string memory reviewedByName,
+        string memory reviewedByEmail
+    ) external returns (uint256) {
+        uint256 originalBlockchainId = auditIdToBlockchainId[auditId];
+        require(originalBlockchainId != 0, "Audit record not found");
         
-        emit PrescriptionVerified(
-            prescriptionId,
-            verifiedBy,
+        // Get original record to copy data
+        PrescriptionRecord memory originalRecord = auditRecords[originalBlockchainId];
+        
+        // Create new record with updated action
+        recordCounter++;
+        uint256 newBlockchainId = recordCounter;
+        
+        PrescriptionRecord memory newRecord = PrescriptionRecord({
+            blockchainId: newBlockchainId,
+            auditId: auditId,
+            prescriptionId: originalRecord.prescriptionId,
+            patientId: originalRecord.patientId,
+            drugName: originalRecord.drugName,
+            eligibilityScore: originalRecord.eligibilityScore,
+            eligibilityPrediction: originalRecord.eligibilityPrediction,
+            oudRiskScore: originalRecord.oudRiskScore,
+            oudRiskPrediction: originalRecord.oudRiskPrediction,
+            flagged: originalRecord.flagged,
+            flagReason: originalRecord.flagReason,
+            recommendation: originalRecord.recommendation,
+            auditedAt: originalRecord.auditedAt,
+            reviewedBy: reviewedBy,
+            reviewedByName: reviewedByName,
+            reviewedByEmail: reviewedByEmail,
+            action: action,
+            actionReason: actionReason,
+            reviewedAt: block.timestamp
+        });
+        
+        auditRecords[newBlockchainId] = newRecord;
+        patientAudits[originalRecord.patientId].push(newBlockchainId);
+        
+        emit PharmacistActionRecorded(
+            newBlockchainId,
+            auditId,
+            action,
+            reviewedBy,
             block.timestamp
         );
+        
+        return newBlockchainId;
     }
     
     /**
-     * @dev Get prescription details
-     * @param prescriptionId ID of the prescription
+     * @dev Get audit record by blockchain ID
+     * @param blockchainId Blockchain-specific ID
      */
-    function getPrescription(uint256 prescriptionId) external view returns (
-        uint256 id,
-        string memory patientId,
-        string memory doctorId,
-        string memory pharmacyId,
-        string memory drugName,
-        uint256 quantity,
-        uint256 timestamp,
-        uint8 riskScore,
-        string memory riskFactors,
-        bool isFlagged,
-        bool isOverridden,
-        string memory overrideReason,
-        string memory overrideBy,
-        uint256 overrideTimestamp
-    ) {
-        PrescriptionRecord memory prescription = prescriptions[prescriptionId];
-        return (
-            prescription.prescriptionId,
-            prescription.patientId,
-            prescription.doctorId,
-            prescription.pharmacyId,
-            prescription.drugName,
-            prescription.quantity,
-            prescription.timestamp,
-            prescription.riskScore,
-            prescription.riskFactors,
-            prescription.isFlagged,
-            prescription.isOverridden,
-            prescription.overrideReason,
-            prescription.overrideBy,
-            prescription.overrideTimestamp
-        );
+    function getAuditRecord(uint256 blockchainId) external view returns (PrescriptionRecord memory) {
+        return auditRecords[blockchainId];
     }
     
     /**
-     * @dev Get all prescriptions for a patient
+     * @dev Get blockchain ID by audit ID
+     * @param auditId audit_id from database
+     */
+    function getBlockchainIdByAuditId(uint256 auditId) external view returns (uint256) {
+        return auditIdToBlockchainId[auditId];
+    }
+    
+    /**
+     * @dev Get all audit records for a patient
      * @param patientId Patient identifier
      */
-    function getPatientPrescriptions(string memory patientId) external view returns (uint256[] memory) {
-        return patientPrescriptions[patientId];
+    function getPatientAudits(string memory patientId) external view returns (uint256[] memory) {
+        return patientAudits[patientId];
     }
     
     /**
-     * @dev Get all prescriptions for a doctor
-     * @param doctorId Doctor identifier
+     * @dev Get total audit record count
      */
-    function getDoctorPrescriptions(string memory doctorId) external view returns (uint256[] memory) {
-        return doctorPrescriptions[doctorId];
-    }
-    
-    /**
-     * @dev Get all prescriptions for a pharmacy
-     * @param pharmacyId Pharmacy identifier
-     */
-    function getPharmacyPrescriptions(string memory pharmacyId) external view returns (uint256[] memory) {
-        return pharmacyPrescriptions[pharmacyId];
-    }
-    
-    /**
-     * @dev Get total prescription count
-     */
-    function getTotalPrescriptions() external view returns (uint256) {
-        return prescriptionCounter;
-    }
-    
-    /**
-     * @dev Check if prescription is flagged
-     * @param prescriptionId ID of the prescription
-     */
-    function isPrescriptionFlagged(uint256 prescriptionId) external view returns (bool) {
-        return prescriptions[prescriptionId].isFlagged && !prescriptions[prescriptionId].isOverridden;
+    function getTotalRecords() external view returns (uint256) {
+        return recordCounter;
     }
 }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AuditHistory.css';
 
-function AuditHistory({ user, onLogout, onNavigateToForm, onNavigateToAudit }) {
+function AuditHistory({ user, onLogout, onNavigateToForm, onNavigateToBlockchain, onNavigateToAudit }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -84,6 +84,9 @@ function AuditHistory({ user, onLogout, onNavigateToForm, onNavigateToAudit }) {
         <div>
           <button onClick={onNavigateToForm} className="nav-button">
             New Audit
+          </button>
+          <button onClick={onNavigateToBlockchain} className="nav-button">
+            🔗 Blockchain Audit Trail
           </button>
           <button onClick={onLogout} className="logout-button">
             Logout

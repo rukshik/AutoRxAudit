@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './PrescriptionForm.css';
 
-function PrescriptionForm({ user, onLogout, onNavigateToHistory, selectedAudit, onAuditActionComplete }) {
+function PrescriptionForm({ user, onLogout, onNavigateToHistory, onNavigateToBlockchain, selectedAudit, onAuditActionComplete }) {
   const [patients, setPatients] = useState([]);
   const [drugs, setDrugs] = useState({ opioids: [], non_opioids: [] });
   const [selectedPatient, setSelectedPatient] = useState('');
@@ -114,6 +114,9 @@ function PrescriptionForm({ user, onLogout, onNavigateToHistory, selectedAudit, 
         <div>
           <button onClick={onNavigateToHistory} className="nav-button">
             View Audit History
+          </button>
+          <button onClick={onNavigateToBlockchain} className="nav-button">
+            🔗 Blockchain Audit Trail
           </button>
           <button onClick={onLogout} className="logout-button">
             Logout

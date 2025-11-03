@@ -172,17 +172,15 @@ blockchain-layer/
 │   ├── hardhat.config.js   # Hardhat configuration
 │   ├── package.json        # Node.js dependencies
 │   ├── .env               # Deployment keys (optional)
-│   └── README.md          # Hardhat docs
+│   └── README.md          # Hardhat-specific docs
 │
 ├── blockchain-service/     # Python microservice
 │   ├── blockchain_service.py  # FastAPI application
 │   ├── requirements.txt   # Python dependencies
-│   ├── .env              # Configuration (REQUIRED)
-│   └── README.md         # Service docs
+│   └── .env              # Configuration (REQUIRED)
 │
 ├── obsolete/             # Old files (ignore)
-├── .env                  # Legacy (use service-specific .env)
-└── README.md            # This file
+└── README.md            # This file (instructions for both)
 ```
 
 ## Troubleshooting

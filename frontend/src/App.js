@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import Login from './Login';
 import PrescriptionForm from './PrescriptionForm';
 import AuditHistory from './AuditHistory';
+import BlockchainAudits from './BlockchainAudits';
 import './App.css';
 
 function App() {
   const [user, setUser] = useState(null);
-  const [currentView, setCurrentView] = useState('form'); // 'form' or 'history'
+  const [currentView, setCurrentView] = useState('form'); // 'form', 'history', or 'blockchain'
   const [selectedAudit, setSelectedAudit] = useState(null);
 
   useEffect(() => {
@@ -43,6 +44,11 @@ function App() {
     setCurrentView('history');
   };
 
+  const navigateToBlockchain = () => {
+    setSelectedAudit(null);
+    setCurrentView('blockchain');
+  };
+
   const navigateToAudit = (audit) => {
     setSelectedAudit(audit);
     setCurrentView('form');
@@ -61,15 +67,24 @@ function App() {
           user={user} 
           onLogout={handleLogout} 
           onNavigateToHistory={navigateToHistory}
+          onNavigateToBlockchain={navigateToBlockchain}
           selectedAudit={selectedAudit}
           onAuditActionComplete={navigateToHistory}
         />
-      ) : (
+      ) : currentView === 'history' ? (
         <AuditHistory 
           user={user} 
           onLogout={handleLogout} 
           onNavigateToForm={navigateToForm}
+          onNavigateToBlockchain={navigateToBlockchain}
           onNavigateToAudit={navigateToAudit}
+        />
+      ) : (
+        <BlockchainAudits 
+          user={user} 
+          onLogout={handleLogout} 
+          onNavigateToForm={navigateToForm}
+          onNavigateToHistory={navigateToHistory}
         />
       )}
     </div>
