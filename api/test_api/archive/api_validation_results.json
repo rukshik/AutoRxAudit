@@ -1,0 +1,140 @@
+{
+  "test_config": {
+    "opioid_drug": "Oxycodone",
+    "non_opioid_drug": "Acetaminophen",
+    "total_patients": 5
+  },
+  "non_opioid_results": [
+    {
+      "flagged": false,
+      "patient_id": "20038478",
+      "prescription_id": "RX_NON_1",
+      "eligibility_score": 1.0,
+      "eligibility_prediction": 1,
+      "oud_risk_score": 0.0,
+      "oud_risk_prediction": 0,
+      "flag_reason": "Non-opioid prescription - no OUD risk assessment required",
+      "recommendation": "APPROVED: Non-opioid medication",
+      "audited_at": "2025-11-02T18:30:30.869382"
+    },
+    {
+      "flagged": false,
+      "patient_id": "20002189",
+      "prescription_id": "RX_NON_2",
+      "eligibility_score": 1.0,
+      "eligibility_prediction": 1,
+      "oud_risk_score": 0.0,
+      "oud_risk_prediction": 0,
+      "flag_reason": "Non-opioid prescription - no OUD risk assessment required",
+      "recommendation": "APPROVED: Non-opioid medication",
+      "audited_at": "2025-11-02T18:30:30.897972"
+    },
+    {
+      "flagged": false,
+      "patient_id": "20026527",
+      "prescription_id": "RX_NON_3",
+      "eligibility_score": 1.0,
+      "eligibility_prediction": 1,
+      "oud_risk_score": 0.0,
+      "oud_risk_prediction": 0,
+      "flag_reason": "Non-opioid prescription - no OUD risk assessment required",
+      "recommendation": "APPROVED: Non-opioid medication",
+      "audited_at": "2025-11-02T18:30:30.929734"
+    },
+    {
+      "flagged": false,
+      "patient_id": "20045637",
+      "prescription_id": "RX_NON_4",
+      "eligibility_score": 1.0,
+      "eligibility_prediction": 1,
+      "oud_risk_score": 0.0,
+      "oud_risk_prediction": 0,
+      "flag_reason": "Non-opioid prescription - no OUD risk assessment required",
+      "recommendation": "APPROVED: Non-opioid medication",
+      "audited_at": "2025-11-02T18:30:30.953360"
+    },
+    {
+      "flagged": false,
+      "patient_id": "20030188",
+      "prescription_id": "RX_NON_5",
+      "eligibility_score": 1.0,
+      "eligibility_prediction": 1,
+      "oud_risk_score": 0.0,
+      "oud_risk_prediction": 0,
+      "flag_reason": "Non-opioid prescription - no OUD risk assessment required",
+      "recommendation": "APPROVED: Non-opioid medication",
+      "audited_at": "2025-11-02T18:30:30.969253"
+    }
+  ],
+  "opioid_results": [
+    {
+      "flagged": true,
+      "patient_id": "20038478",
+      "prescription_id": "RX_OPI_1",
+      "eligibility_score": 0.1630325360214494,
+      "eligibility_prediction": 0,
+      "oud_risk_score": 0.11238330143004999,
+      "oud_risk_prediction": 0,
+      "flag_reason": "No clinical need for opioids (eligibility: 16.3%)",
+      "recommendation": "REVIEW REQUIRED: Consider alternative pain management or additional evaluation",
+      "audited_at": "2025-11-02T18:30:34.089924"
+    },
+    {
+      "flagged": true,
+      "patient_id": "20002189",
+      "prescription_id": "RX_OPI_2",
+      "eligibility_score": 0.16971816706674606,
+      "eligibility_prediction": 0,
+      "oud_risk_score": 0.184471594499493,
+      "oud_risk_prediction": 0,
+      "flag_reason": "No clinical need for opioids (eligibility: 17.0%)",
+      "recommendation": "REVIEW REQUIRED: Consider alternative pain management or additional evaluation",
+      "audited_at": "2025-11-02T18:30:37.572663"
+    },
+    {
+      "flagged": true,
+      "patient_id": "20026527",
+      "prescription_id": "RX_OPI_3",
+      "eligibility_score": 0.15597189788843832,
+      "eligibility_prediction": 0,
+      "oud_risk_score": 0.14578369729510332,
+      "oud_risk_prediction": 0,
+      "flag_reason": "No clinical need for opioids (eligibility: 15.6%)",
+      "recommendation": "REVIEW REQUIRED: Consider alternative pain management or additional evaluation",
+      "audited_at": "2025-11-02T18:30:40.648759"
+    },
+    {
+      "flagged": true,
+      "patient_id": "20045637",
+      "prescription_id": "RX_OPI_4",
+      "eligibility_score": 0.23233425585473486,
+      "eligibility_prediction": 0,
+      "oud_risk_score": 0.191985262892386,
+      "oud_risk_prediction": 0,
+      "flag_reason": "No clinical need for opioids (eligibility: 23.2%)",
+      "recommendation": "REVIEW REQUIRED: Consider alternative pain management or additional evaluation",
+      "audited_at": "2025-11-02T18:30:43.846983"
+    },
+    {
+      "flagged": true,
+      "patient_id": "20030188",
+      "prescription_id": "RX_OPI_5",
+      "eligibility_score": 0.15597189788843832,
+      "eligibility_prediction": 0,
+      "oud_risk_score": 0.1801662065570148,
+      "oud_risk_prediction": 0,
+      "flag_reason": "No clinical need for opioids (eligibility: 15.6%)",
+      "recommendation": "REVIEW REQUIRED: Consider alternative pain management or additional evaluation",
+      "audited_at": "2025-11-02T18:30:46.942026"
+    }
+  ],
+  "incorrectly_flagged": [],
+  "summary": {
+    "total_tests": 10,
+    "total_patients": 5,
+    "non_opioid_correct": 5,
+    "non_opioid_incorrect": 0,
+    "opioid_flagged": 5,
+    "opioid_not_flagged": 0
+  }
+}
