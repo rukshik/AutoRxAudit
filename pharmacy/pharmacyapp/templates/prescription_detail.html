@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prescription Review - Pharmacy</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-size: 14px;
+        }
+        .navbar {
+            background: white !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .navbar-brand {
+            color: #667eea !important;
+            font-weight: bold;
+            font-size: 1.3rem;
+        }
+        .user-info {
+            color: #666;
+            margin-right: 1rem;
+            font-size: 0.9rem;
+        }
+        .main-content {
+            padding: 1.5rem;
+        }
+        .detail-card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .detail-card h3 {
+            color: #667eea;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .info-item {
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .info-label {
+            font-size: 0.75rem;
+            color: #666;
+            text-transform: uppercase;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        .info-value {
+            color: #333;
+            font-weight: 500;
+        }
+        .badge {
+            font-size: 0.8rem;
+            padding: 0.35rem 0.6rem;
+        }
+        .status-received { background-color: #6c757d; }
+        .status-ai-approved { background-color: #28a745; }
+        .status-ai-flagged { background-color: #ffc107; color: #000; }
+        .status-ai-error { background-color: #dc3545; }
+        .status-approved { background-color: #198754; }
+        .status-declined { background-color: #dc3545; }
+        
+        .scores-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .score-box {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        .score-box.flagged {
+            border-left-color: #ffc107;
+        }
+        .score-title {
+            font-size: 0.85rem;
+            color: #666;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .score-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 0.25rem;
+        }
+        .score-value.positive { color: #28a745; }
+        .score-value.negative { color: #dc3545; }
+        .score-label {
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .score-note {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 0.25rem;
+        }
+        
+        .alert-box {
+            padding: 0.75rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            border-left: 4px solid;
+        }
+        .alert-flagged {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+            color: #856404;
+        }
+        .alert-approved {
+            background: #d4edda;
+            border-left-color: #28a745;
+            color: #155724;
+        }
+        
+        .action-form {
+            background: #f8f9fa;
+            padding: 1.25rem;
+            border-radius: 6px;
+        }
+        .readonly-message {
+            background: #e9ecef;
+            padding: 1rem;
+            border-radius: 6px;
+            text-align: center;
+            color: #495057;
+        }
+        .btn-sm {
+            font-size: 0.85rem;
+            padding: 0.375rem 0.75rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <div class="container-fluid">
+            <span class="navbar-brand">Pharmacy Portal - AutoRxAudit</span>
+            <div class="d-flex align-items-center">
+                <a href="/pharmacy/prescriptions?user_id={{ user.user_id }}" class="btn btn-outline-primary btn-sm me-2">Back to List</a>
+                <span class="user-info">{{ user.full_name }} ({{ user.role }})</span>
+                <a href="/pharmacy/login" class="btn btn-danger btn-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="main-content">
+        <div class="container-fluid">
+            <!-- Prescription Details -->
+            <div class="detail-card">
+                <h3>Prescription Details</h3>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Rx ID</div>
+                        <div class="info-value">
+                            <code style="font-size: 0.85rem;">{{ prescription.prescription_uuid if prescription.prescription_uuid else ('RX-' ~ prescription.prescription_id) }}</code>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Patient</div>
+                        <div class="info-value">{{ prescription.patient_name or prescription.patient_id }}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Drug</div>
+                        <div class="info-value"><strong>{{ prescription.drug_name }}</strong></div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Quantity</div>
+                        <div class="info-value">{{ prescription.quantity or 'N/A' }}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Refills</div>
+                        <div class="info-value">{{ prescription.refills or 0 }}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value">
+                            {% if prescription.status == 'RECEIVED' %}
+                                <span class="badge status-received">Received</span>
+                            {% elif prescription.status == 'AI_APPROVED' %}
+                                <span class="badge status-ai-approved">AI Approved</span>
+                            {% elif prescription.status == 'AI_FLAGGED' %}
+                                <span class="badge status-ai-flagged">AI Flagged</span>
+                            {% elif prescription.status == 'AI_ERROR' %}
+                                <span class="badge status-ai-error">AI Error</span>
+                            {% elif prescription.status == 'APPROVED' %}
+                                <span class="badge status-approved">Approved</span>
+                            {% elif prescription.status == 'DECLINED' %}
+                                <span class="badge status-declined">Declined</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ prescription.status }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Prescribed At</div>
+                        <div class="info-value">{{ prescription.prescribed_at.strftime('%Y-%m-%d %H:%M') if prescription.prescribed_at else 'N/A' }}</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Audit Trail</div>
+                        <div class="info-value">
+                            <button onclick="viewBlockchainTrail('{{ prescription.prescription_uuid }}')" class="btn btn-sm btn-outline-secondary">View Blockchain</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Review Results -->
+            {% if review %}
+            <div class="detail-card">
+                <h3>AI Review Results</h3>
+                
+                <div class="alert-box {% if review.flagged %}alert-flagged{% else %}alert-approved{% endif %}">
+                    <strong>{{ 'Flagged for Review' if review.flagged else 'AI Approved' }}</strong>
+                    <div style="margin-top: 0.25rem;">{{ review.recommendation }}</div>
+                    {% if review.flag_reason %}
+                    <div style="margin-top: 0.25rem;"><strong>Reason:</strong> {{ review.flag_reason }}</div>
+                    {% endif %}
+                </div>
+
+                <div class="scores-container">
+                    <div class="score-box">
+                        <div class="score-title">Eligibility Assessment</div>
+                        <div class="score-value {% if review.eligibility_prediction == 1 %}positive{% else %}negative{% endif %}">
+                            {{ "%.0f"|format(review.eligibility_score * 100) }}%
+                        </div>
+                        <div class="score-label">{{ 'Eligible' if review.eligibility_prediction == 1 else 'Not Eligible' }}</div>
+                        <div class="score-note">{% if review.eligibility_score < 0.5 %}Low score indicates ineligibility{% else %}High score indicates eligibility{% endif %}</div>
+                    </div>
+                    <div class="score-box {% if review.oud_risk_prediction == 1 %}flagged{% endif %}">
+                        <div class="score-title">OUD Risk Assessment</div>
+                        <div class="score-value {% if review.oud_risk_prediction == 0 %}positive{% else %}negative{% endif %}">
+                            {{ "%.0f"|format(review.oud_risk_score * 100) }}%
+                        </div>
+                        <div class="score-label">{{ 'Low Risk' if review.oud_risk_prediction == 0 else 'High Risk' }}</div>
+                        <div class="score-note">{% if review.oud_risk_score < 0.5 %}Low score indicates lower risk{% else %}High score indicates higher risk{% endif %}</div>
+                    </div>
+                </div>
+
+                {% if review.reviewed_by %}
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #dee2e6;">
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Pharmacist Action</div>
+                            <div class="info-value">
+                                <span class="badge {% if review.action == 'APPROVED' %}bg-success{% else %}bg-danger{% endif %}">
+                                    {{ review.action }}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Reviewed By</div>
+                            <div class="info-value">{{ review.reviewer_name }}</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Reviewed At</div>
+                            <div class="info-value">{{ review.reviewed_at.strftime('%Y-%m-%d %H:%M') if review.reviewed_at else 'N/A' }}</div>
+                        </div>
+                        {% if review.action_reason %}
+                        <div class="info-item" style="grid-column: 1 / -1;">
+                            <div class="info-label">Reason</div>
+                            <div class="info-value">{{ review.action_reason }}</div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Pharmacist Action Form -->
+            {% if can_edit %}
+            <div class="detail-card">
+                <h3>Take Action</h3>
+                <form method="POST" action="/pharmacy/prescription/{{ prescription.prescription_id }}/action">
+                    <input type="hidden" name="user_id" value="{{ user.user_id }}">
+                    
+                    <div class="action-form">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Decision:</label>
+                            <div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="action" id="approve" value="APPROVED" required>
+                                    <label class="form-check-label" for="approve">Approve</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="action" id="decline" value="DECLINED" required>
+                                    <label class="form-check-label" for="decline">Decline</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="action_reason" class="form-label fw-bold">Notes:</label>
+                            <textarea class="form-control" id="action_reason" name="action_reason" rows="2" placeholder="Enter reason for your decision..." style="font-size: 0.9rem;"></textarea>
+                        </div>
+                        
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary btn-sm">Submit Decision</button>
+                            <a href="/pharmacy/prescriptions?user_id={{ user.user_id }}" class="btn btn-secondary btn-sm">Cancel</a>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            {% else %}
+            <div class="detail-card">
+                <div class="readonly-message">
+                    <strong>This prescription cannot be edited</strong>
+                    <div style="margin-top: 0.5rem;">Status: {{ prescription.status }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Blockchain Audit Trail Modal -->
+    <div class="modal fade" id="blockchainModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Blockchain Audit Trail</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="blockchainTrailContent">
+                    <div class="text-center">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    async function viewBlockchainTrail(prescriptionUuid) {
+        const modal = new bootstrap.Modal(document.getElementById('blockchainModal'));
+        const content = document.getElementById('blockchainTrailContent');
+        
+        // Show loading spinner
+        content.innerHTML = `
+            <div class="text-center">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Fetching blockchain audit trail...</p>
+            </div>
+        `;
+        
+        modal.show();
+        
+        try {
+            const response = await fetch(`http://localhost:8001/pharmacy/prescription-trail/${prescriptionUuid}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            if (!data.timeline || data.timeline.length === 0) {
+                content.innerHTML = `
+                    <div class="alert alert-info">
+                        <strong>No blockchain events found</strong>
+                        <p class="mb-0 mt-2">This prescription has not been logged to the blockchain yet.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Build timeline HTML
+            let html = '<div class="timeline">';
+            
+            data.timeline.forEach((event, index) => {
+                const isLast = index === data.timeline.length - 1;
+                const eventType = event.event_type;
+                let icon, color, title, details;
+                
+                if (eventType === 'prescription_created') {
+                    icon = '📋';
+                    color = 'primary';
+                    title = 'Prescription Created';
+                    details = `Doctor ID: ${event.doctor_id}`;
+                } else if (eventType === 'ai_review') {
+                    icon = event.flagged ? '⚠️' : '✓';
+                    color = event.flagged ? 'warning' : 'success';
+                    title = 'AI Review Completed';
+                    details = `
+                        <div><strong>${event.flagged ? 'Flagged' : 'Approved'}</strong></div>
+                        <div>Eligibility Score: ${event.eligibility_score}%</div>
+                        <div>OUD Risk Score: ${event.oud_risk_score}%</div>
+                        <div class="mt-1"><em>${event.recommendation}</em></div>
+                    `;
+                } else if (eventType === 'pharmacist_decision') {
+                    icon = '👨‍⚕️';
+                    color = event.action === 'APPROVED' ? 'success' : 'danger';
+                    title = 'Pharmacist Decision';
+                    details = `
+                        <div><strong>Action: ${event.action}</strong></div>
+                        <div>Pharmacist ID: ${event.pharmacist_id}</div>
+                        ${event.action_reason ? `<div class="mt-1"><em>${event.action_reason}</em></div>` : ''}
+                    `;
+                }
+                
+                html += `
+                    <div class="timeline-item">
+                        <div class="timeline-marker bg-${color}">${icon}</div>
+                        <div class="timeline-content">
+                            <h6 class="mb-1">${title}</h6>
+                            <div class="text-muted small mb-2">${new Date(event.timestamp * 1000).toLocaleString()}</div>
+                            <div class="small">${details}</div>
+                            <div class="text-muted small mt-2" style="word-break: break-all;">
+                                <div><strong>Block:</strong> ${event.block_number}</div>
+                                <div><strong>Tx:</strong> ${event.transaction_hash}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            
+            // Add timeline styles
+            html = `
+                <style>
+                    .timeline {
+                        position: relative;
+                        padding-left: 40px;
+                    }
+                    .timeline-item {
+                        position: relative;
+                        padding-bottom: 30px;
+                    }
+                    .timeline-item:last-child {
+                        padding-bottom: 0;
+                    }
+                    .timeline-item:not(:last-child)::before {
+                        content: '';
+                        position: absolute;
+                        left: -25px;
+                        top: 35px;
+                        width: 2px;
+                        height: calc(100% - 10px);
+                        background: #dee2e6;
+                    }
+                    .timeline-marker {
+                        position: absolute;
+                        left: -35px;
+                        top: 0;
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 1.2rem;
+                        border: 3px solid white;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }
+                    .timeline-content {
+                        background: #f8f9fa;
+                        padding: 15px;
+                        border-radius: 8px;
+                        border-left: 3px solid #dee2e6;
+                    }
+                </style>
+            ` + html;
+            
+            content.innerHTML = html;
+            
+        } catch (error) {
+            content.innerHTML = `
+                <div class="alert alert-danger">
+                    <strong>Error loading blockchain trail</strong>
+                    <p class="mb-0 mt-2">${error.message}</p>
+                    <p class="mb-0 mt-1 small">Make sure the blockchain service is running on port 8001</p>
+                </div>
+            `;
+        }
+    }
+    </script>
+</body>
+</html>

@@ -160,10 +160,11 @@ CONTRACT_ABI = [
 w3 = None
 contract = None
 account = None
+pharmacy_contract = None  # Add pharmacy contract to globals
 
 def initialize_blockchain():
     """Initialize blockchain connection"""
-    global w3, contract, account
+    global w3, contract, account, pharmacy_contract
     
     if not CONTRACT_ADDRESS:
         print("⚠️  CONTRACT_ADDRESS not set in .env - run deployment first!")
@@ -187,6 +188,20 @@ def initialize_blockchain():
         print(f"✓ Connected to blockchain at {BLOCKCHAIN_RPC_URL}")
         print(f"✓ Contract address: {CONTRACT_ADDRESS}")
         print(f"✓ Using account: {account if isinstance(account, str) else account.address if account else 'None'}")
+        
+        # Initialize pharmacy workflow contract if configured
+        if PHARMACY_WORKFLOW_CONTRACT_ADDRESS:
+            try:
+                pharmacy_contract = w3.eth.contract(
+                    address=Web3.to_checksum_address(PHARMACY_WORKFLOW_CONTRACT_ADDRESS),
+                    abi=PHARMACY_WORKFLOW_ABI
+                )
+                print(f"✓ Pharmacy Workflow Contract loaded at {PHARMACY_WORKFLOW_CONTRACT_ADDRESS}")
+            except Exception as e:
+                print(f"⚠️  Failed to load pharmacy workflow contract: {e}")
+        else:
+            print("⚠️  PHARMACY_WORKFLOW_CONTRACT_ADDRESS not set - pharmacy workflow disabled")
+        
         return True
     except Exception as e:
         print(f"❌ Blockchain initialization failed: {e}")
@@ -439,6 +454,310 @@ async def get_all_audit_records(limit: int = 50):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch audit records: {str(e)}")
+
+# ============================================================================
+# PHARMACY WORKFLOW ENDPOINTS (New Contract)
+# ============================================================================
+
+# Load pharmacy workflow contract configuration
+PHARMACY_WORKFLOW_CONTRACT_ADDRESS = os.getenv('PHARMACY_WORKFLOW_CONTRACT_ADDRESS', '')
+
+# Pharmacy workflow contract ABI
+PHARMACY_WORKFLOW_ABI = [
+    {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "string", "name": "doctorId", "type": "string"}
+        ],
+        "name": "logPrescriptionCreated",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "bool", "name": "flagged", "type": "bool"},
+            {"internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
+            {"internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
+            {"internalType": "string", "name": "flagReason", "type": "string"},
+            {"internalType": "string", "name": "recommendation", "type": "string"}
+        ],
+        "name": "logAIReview",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "string", "name": "pharmacistId", "type": "string"},
+            {"internalType": "string", "name": "action", "type": "string"},
+            {"internalType": "string", "name": "actionReason", "type": "string"}
+        ],
+        "name": "logPharmacistDecision",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getStatistics",
+        "outputs": [
+            {"internalType": "uint256", "name": "prescriptions", "type": "uint256"},
+            {"internalType": "uint256", "name": "aiReviews", "type": "uint256"},
+            {"internalType": "uint256", "name": "pharmacistDecisions", "type": "uint256"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "doctorId", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "PrescriptionCreated",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "bool", "name": "flagged", "type": "bool"},
+            {"indexed": False, "internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
+            {"indexed": False, "internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
+            {"indexed": False, "internalType": "string", "name": "flagReason", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "recommendation", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "AIReviewCompleted",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "pharmacistId", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "action", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "actionReason", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "PharmacistDecision",
+        "type": "event"
+    }
+]
+
+# Pydantic models for pharmacy workflow
+class PrescriptionCreatedRequest(BaseModel):
+    prescription_uuid: str
+    doctor_id: str
+
+class AIReviewRequest(BaseModel):
+    prescription_uuid: str
+    flagged: bool
+    eligibility_score: int = Field(..., ge=0, le=100)
+    oud_risk_score: int = Field(..., ge=0, le=100)
+    flag_reason: str = ""
+    recommendation: str
+
+class PharmacistDecisionRequest(BaseModel):
+    prescription_uuid: str
+    pharmacist_id: str
+    action: str  # "APPROVED" or "DECLINED"
+    action_reason: str = ""
+
+@app.post("/pharmacy/prescription-created")
+async def log_prescription_created(request: PrescriptionCreatedRequest):
+    """Log prescription creation to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logPrescriptionCreated(
+            request.prescription_uuid,
+            request.doctor_id
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "Prescription creation logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log prescription creation: {str(e)}")
+
+@app.post("/pharmacy/ai-review")
+async def log_ai_review(request: AIReviewRequest):
+    """Log AI review completion to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logAIReview(
+            request.prescription_uuid,
+            request.flagged,
+            request.eligibility_score,
+            request.oud_risk_score,
+            request.flag_reason,
+            request.recommendation
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "AI review logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log AI review: {str(e)}")
+
+@app.post("/pharmacy/pharmacist-decision")
+async def log_pharmacist_decision(request: PharmacistDecisionRequest):
+    """Log pharmacist decision to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logPharmacistDecision(
+            request.prescription_uuid,
+            request.pharmacist_id,
+            request.action,
+            request.action_reason
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "Pharmacist decision logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log pharmacist decision: {str(e)}")
+
+@app.get("/pharmacy/prescription-trail/{prescription_uuid}")
+async def get_prescription_trail(prescription_uuid: str):
+    """Get complete audit trail for a prescription from blockchain events"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Get all events for this prescription UUID
+        prescription_created_filter = pharmacy_contract.events.PrescriptionCreated.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
+        ai_review_filter = pharmacy_contract.events.AIReviewCompleted.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
+        pharmacist_decision_filter = pharmacy_contract.events.PharmacistDecision.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
+        
+        # Fetch events
+        created_events = prescription_created_filter.get_all_entries()
+        ai_review_events = ai_review_filter.get_all_entries()
+        decision_events = pharmacist_decision_filter.get_all_entries()
+        
+        # Build timeline
+        timeline = []
+        
+        for event in created_events:
+            timeline.append({
+                "event_type": "prescription_created",
+                "timestamp": event.args.timestamp,
+                "doctor_id": event.args.doctorId,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
+        for event in ai_review_events:
+            timeline.append({
+                "event_type": "ai_review",
+                "timestamp": event.args.timestamp,
+                "flagged": event.args.flagged,
+                "eligibility_score": event.args.eligibilityScore,
+                "oud_risk_score": event.args.oudRiskScore,
+                "flag_reason": event.args.flagReason,
+                "recommendation": event.args.recommendation,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
+        for event in decision_events:
+            timeline.append({
+                "event_type": "pharmacist_decision",
+                "timestamp": event.args.timestamp,
+                "pharmacist_id": event.args.pharmacistId,
+                "action": event.args.action,
+                "action_reason": event.args.actionReason,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
+        # Sort by block number (primary) and timestamp (secondary) to ensure correct chronological order
+        timeline.sort(key=lambda x: (x['block_number'], x['timestamp']))
+        
+        return {
+            "prescription_uuid": prescription_uuid,
+            "total_events": len(timeline),
+            "timeline": timeline
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch prescription trail: {str(e)}")
+
+@app.get("/pharmacy/statistics")
+async def get_pharmacy_statistics():
+    """Get pharmacy workflow contract statistics"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        stats = pharmacy_contract.functions.getStatistics().call()
+        return {
+            "total_prescriptions": stats[0],
+            "total_ai_reviews": stats[1],
+            "total_pharmacist_decisions": stats[2]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch statistics: {str(e)}")
 
 # ============================================================================
 # STARTUP
