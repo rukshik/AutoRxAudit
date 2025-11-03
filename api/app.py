@@ -8,7 +8,7 @@ FastAPI application that:
 4. Returns audit decision with explanation
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, List
@@ -108,6 +108,55 @@ class PatientFeaturesResponse(BaseModel):
     created_at: str
 
 
+class LoginRequest(BaseModel):
+    """User login request."""
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """Login response."""
+    success: bool
+    user: Dict
+
+
+class AuditActionRequest(BaseModel):
+    """User action on audit result."""
+    audit_id: Optional[int] = None
+    patient_id: str
+    drug_name: str
+    eligibility_score: float
+    eligibility_prediction: int
+    oud_risk_score: float
+    oud_risk_prediction: int
+    flagged: bool
+    flag_reason: str
+    action: str  # 'APPROVED', 'DENIED', 'OVERRIDE_APPROVE', 'OVERRIDE_DENY'
+    action_reason: Optional[str] = None
+
+
+class AuditActionResponse(BaseModel):
+    """Audit action response."""
+    action_id: int
+    success: bool
+    message: str
+
+
+class AuditHistoryItem(BaseModel):
+    """Audit history item."""
+    action_id: int
+    patient_id: str
+    drug_name: str
+    user_email: str
+    user_name: str
+    flagged: bool
+    eligibility_score: float
+    oud_risk_score: float
+    action: str
+    action_reason: Optional[str]
+    created_at: str
+
+
 # ============================================================================
 # DATABASE CONNECTION
 # ============================================================================
@@ -194,6 +243,43 @@ def load_models():
 
 # Global model instances
 eligibility_model, eligibility_scaler, oud_model, oud_scaler = load_models()
+
+
+# ============================================================================
+# AUTHENTICATION FUNCTIONS
+# ============================================================================
+
+# Simple session storage (in-memory - for production use Redis or database)
+active_sessions = {}
+
+
+def create_session(email: str) -> str:
+    """Create a simple session ID."""
+    import uuid
+    session_id = str(uuid.uuid4())
+    active_sessions[session_id] = email
+    return session_id
+
+
+def get_user_from_session(session_id: str) -> Optional[Dict]:
+    """Get user from session ID."""
+    email = active_sessions.get(session_id)
+    if not email:
+        return None
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, email, full_name, role FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        cursor.close()
+        return dict(user) if user else None
+
+
+async def get_current_user(session_id: str = Depends(lambda: None)):
+    """Get current user from session (simplified - no auth for now)."""
+    # For development: skip authentication
+    # In production, check session_id from cookie/header
+    return {"user_id": 1, "email": "test@test.com", "full_name": "Test User", "role": "doctor"}
 
 
 # ============================================================================
@@ -484,6 +570,189 @@ async def get_stats():
             "avg_eligibility_score": float(stats['avg_eligibility_score'] or 0),
             "avg_oud_risk_score": float(stats['avg_oud_risk_score'] or 0)
         }
+
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/api/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """User login endpoint - simple password matching."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id, email, password, full_name, role FROM users WHERE email = %s AND is_active = TRUE",
+            (request.email,)
+        )
+        user = cursor.fetchone()
+        
+        if not user or user['password'] != request.password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password"
+            )
+        
+        # Update last login
+        cursor.execute("UPDATE users SET last_login = NOW() WHERE user_id = %s", (user['user_id'],))
+        conn.commit()
+        cursor.close()
+        
+        # Create simple session
+        session_id = create_session(user['email'])
+        
+        return {
+            "success": True,
+            "user": {
+                "user_id": user['user_id'],
+                "email": user['email'],
+                "full_name": user['full_name'],
+                "role": user['role'],
+                "session_id": session_id
+            }
+        }
+
+
+@app.get("/api/me")
+async def get_current_user_info(current_user: dict = Depends(get_current_user)):
+    """Get current user information."""
+    return current_user
+
+
+@app.get("/api/patients")
+async def get_patients(current_user: dict = Depends(get_current_user)):
+    """Get list of patients for dropdown."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT patient_id, date_of_birth, gender
+            FROM patients
+            ORDER BY patient_id
+            LIMIT 100
+        """)
+        patients = cursor.fetchall()
+        cursor.close()
+        return [dict(p) for p in patients]
+
+
+@app.get("/api/drugs")
+async def get_drugs(current_user: dict = Depends(get_current_user)):
+    """Get list of drugs (opioids and non-opioids) for dropdown."""
+    return {
+        "opioids": [
+            "Oxycodone 5mg",
+            "Morphine 10mg",
+            "Hydrocodone 5mg",
+            "Fentanyl 25mcg",
+            "Hydromorphone 2mg",
+            "Codeine 30mg",
+            "Tramadol 50mg"
+        ],
+        "non_opioids": [
+            "Acetaminophen 500mg",
+            "Ibuprofen 400mg",
+            "Naproxen 500mg",
+            "Aspirin 325mg",
+            "Celecoxib 200mg"
+        ]
+    }
+
+
+# ============================================================================
+# AUDIT ACTION ENDPOINTS
+# ============================================================================
+
+@app.post("/api/audit-action", response_model=AuditActionResponse)
+async def record_audit_action(
+    request: AuditActionRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Record user action on prescription audit (approve/deny/override)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Insert audit action
+        cursor.execute("""
+            INSERT INTO audit_actions (
+                user_id, patient_id, drug_name,
+                flagged, eligibility_score, eligibility_prediction,
+                oud_risk_score, oud_risk_prediction, flag_reason,
+                action, action_reason
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            ) RETURNING action_id
+        """, (
+            current_user['user_id'],
+            request.patient_id,
+            request.drug_name,
+            request.flagged,
+            request.eligibility_score,
+            request.eligibility_prediction,
+            request.oud_risk_score,
+            request.oud_risk_prediction,
+            request.flag_reason,
+            request.action,
+            request.action_reason
+        ))
+        
+        action_id = cursor.fetchone()['action_id']
+        conn.commit()
+        cursor.close()
+        
+        return {
+            "action_id": action_id,
+            "success": True,
+            "message": f"Audit action '{request.action}' recorded successfully"
+        }
+
+
+@app.get("/api/audit-history", response_model=List[AuditHistoryItem])
+async def get_audit_history(
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get audit history with user actions."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT 
+                aa.action_id,
+                aa.patient_id,
+                aa.drug_name,
+                u.email as user_email,
+                u.full_name as user_name,
+                aa.flagged,
+                aa.eligibility_score,
+                aa.oud_risk_score,
+                aa.action,
+                aa.action_reason,
+                aa.created_at
+            FROM audit_actions aa
+            JOIN users u ON aa.user_id = u.user_id
+            ORDER BY aa.created_at DESC
+            LIMIT %s
+        """, (limit,))
+        
+        actions = cursor.fetchall()
+        cursor.close()
+        
+        return [
+            {
+                "action_id": a['action_id'],
+                "patient_id": a['patient_id'],
+                "drug_name": a['drug_name'],
+                "user_email": a['user_email'],
+                "user_name": a['user_name'],
+                "flagged": a['flagged'],
+                "eligibility_score": float(a['eligibility_score']),
+                "oud_risk_score": float(a['oud_risk_score']),
+                "action": a['action'],
+                "action_reason": a['action_reason'],
+                "created_at": a['created_at'].isoformat() if a['created_at'] else None
+            }
+            for a in actions
+        ]
 
 
 if __name__ == "__main__":

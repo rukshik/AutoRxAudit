@@ -1,0 +1,261 @@
+.history-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.app-header {
+  background: white;
+  padding: 1.5rem 2rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.app-header h1 {
+  margin: 0 0 0.5rem 0;
+  color: #667eea;
+  font-size: 1.8rem;
+}
+
+.user-info {
+  margin: 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.nav-button, .logout-button {
+  padding: 0.6rem 1.2rem;
+  margin-left: 1rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.nav-button {
+  background: #667eea;
+  color: white;
+}
+
+.nav-button:hover {
+  background: #5568d3;
+}
+
+.logout-button {
+  background: #e74c3c;
+  color: white;
+}
+
+.logout-button:hover {
+  background: #c0392b;
+}
+
+.history-content {
+  max-width: 1600px;
+  margin: 2rem auto;
+  padding: 0 2rem;
+}
+
+.history-card {
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.history-card h2 {
+  margin: 0 0 1.5rem 0;
+  color: #333;
+  font-size: 1.5rem;
+}
+
+.loading-message, .error-message, .empty-message {
+  padding: 2rem;
+  text-align: center;
+  font-size: 1.1rem;
+}
+
+.error-message {
+  color: #e74c3c;
+}
+
+.empty-message {
+  color: #999;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.history-table thead {
+  background: #f5f5f5;
+  position: sticky;
+  top: 0;
+}
+
+.history-table th {
+  padding: 1rem 0.8rem;
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 2px solid #ddd;
+}
+
+.history-table td {
+  padding: 1rem 0.8rem;
+  border-bottom: 1px solid #eee;
+  vertical-align: top;
+}
+
+.history-table tbody tr:hover {
+  background: #f9f9f9;
+}
+
+.date-cell {
+  white-space: nowrap;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.patient-cell {
+  font-family: 'Courier New', monospace;
+  font-weight: 500;
+}
+
+.drug-cell {
+  font-weight: 500;
+  color: #667eea;
+}
+
+.score-cell {
+  text-align: center;
+}
+
+.score-badge {
+  display: inline-block;
+  padding: 0.3rem 0.8rem;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.score-badge.positive {
+  background: #d4edda;
+  color: #155724;
+}
+
+.score-badge.negative {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.flagged-cell {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.flag-yes {
+  color: #e74c3c;
+  font-weight: 600;
+}
+
+.flag-no {
+  color: #27ae60;
+  font-weight: 600;
+}
+
+.action-cell {
+  text-align: center;
+}
+
+.action-badge {
+  display: inline-block;
+  padding: 0.4rem 1rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.action-badge.action-approved {
+  background: #d4edda;
+  color: #155724;
+}
+
+.action-badge.action-denied {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.action-badge.action-override {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.action-badge.action-override-deny {
+  background: #e2e3e5;
+  color: #383d41;
+}
+
+.clinician-cell {
+  color: #555;
+}
+
+.reason-cell {
+  max-width: 300px;
+  color: #666;
+  line-height: 1.4;
+}
+
+.reason-cell em {
+  color: #999;
+}
+
+@media (max-width: 1200px) {
+  .history-table {
+    font-size: 0.85rem;
+  }
+
+  .history-table th,
+  .history-table td {
+    padding: 0.8rem 0.6rem;
+  }
+
+  .reason-cell {
+    max-width: 200px;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .history-card {
+    padding: 1rem;
+  }
+
+  .history-table {
+    font-size: 0.75rem;
+  }
+
+  .history-table th,
+  .history-table td {
+    padding: 0.6rem 0.4rem;
+  }
+
+  .reason-cell {
+    max-width: 150px;
+    font-size: 0.7rem;
+  }
+}
