@@ -15,14 +15,14 @@ React frontend for the AutoRxAudit prescription auditing system with AI-powered 
 ### 1. Apply Database Schema (First Time Only)
 
 ```bash
-cd api/database
+cd singleapp/api/database
 psql -h autorxaudit-server.postgres.database.azure.com -U cloudsa -d mimiciv_demo_raw -f schema_with_users.sql
 ```
 
 ### 2. Start Backend API
 
 ```bash
-cd api
+cd singleapp/api
 python -m uvicorn app:app --reload
 ```
 
@@ -31,7 +31,7 @@ Backend runs on `http://localhost:8000`
 ### 3. Start Frontend
 
 ```bash
-cd frontend
+cd singleapp/frontend
 npm install  # First time only
 npm start
 ```

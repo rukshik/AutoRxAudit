@@ -12,7 +12,7 @@ Main validation script that tests the API with both opioid and non-opioid prescr
 
 **Usage:**
 ```bash
-cd ..
+cd singleapp/api
 python test_api/validate_api.py
 ```
 
@@ -23,7 +23,7 @@ Queries the database to identify patients with minimal OUD risk indicators.
 
 **Usage:**
 ```bash
-cd ..
+cd singleapp/api
 python test_api/find_low_risk_patients.py
 ```
 
@@ -34,7 +34,7 @@ Simple utility to list available patient IDs from the database.
 
 **Usage:**
 ```bash
-cd ..
+cd singleapp/api
 python test_api/check_patients.py
 ```
 
@@ -46,7 +46,7 @@ Diagnostic script to inspect the database schema.
 
 **Usage:**
 ```bash
-cd ..
+cd singleapp/api
 python test_api/check_db_schema.py
 ```
 
@@ -58,7 +58,7 @@ Direct model testing bypassing the API.
 
 **Usage:**
 ```bash
-cd ..
+cd singleapp/api
 python test_api/test_model_directly.py
 ```
 
