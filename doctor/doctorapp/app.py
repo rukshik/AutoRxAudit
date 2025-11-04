@@ -363,6 +363,27 @@ class PrescriptionStatusUpdate(BaseModel):
     status: str
     pharmacy_notes: Optional[str] = None
 
+def log_communication(conn, prescription_uuid: str, 
+                     action_type: str, actor_type: str, actor_id: int, 
+                     actor_name: str, comments: str, previous_status: str, new_status: str):
+    """Log communication to prescription_communications table using prescription_uuid."""
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO prescription_communications 
+            (prescription_uuid, action_type, actor_type, 
+             actor_id, actor_name, comments, previous_status, new_status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        """, (prescription_uuid, action_type, actor_type, 
+              actor_id, actor_name, comments, previous_status, new_status))
+        conn.commit()
+        print(f"✓ Communication logged: {action_type} by {actor_name}")
+    except Exception as e:
+        print(f"⚠️  Failed to log communication: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+
 # API endpoint to receive prescription status update from pharmacy
 @app.post("/api/prescription-status-update")
 def update_prescription_status(update: PrescriptionStatusUpdate):
@@ -395,6 +416,11 @@ def update_prescription_status(update: PrescriptionStatusUpdate):
             RETURNING id, prescription_uuid, status
         """
         
+        # Get current status before update for communication logging
+        cur.execute("SELECT status FROM prescription_requests WHERE prescription_uuid = %s", (update.prescription_uuid,))
+        current = cur.fetchone()
+        previous_status = current['status'] if current else 'unknown'
+        
         cur.execute(query, (update.status, update.pharmacy_notes, update.prescription_uuid))
         result = cur.fetchone()
         
@@ -411,6 +437,15 @@ def update_prescription_status(update: PrescriptionStatusUpdate):
             )
         
         conn.commit()
+        
+        # Log communication from pharmacy (when they request review or send final decision)
+        if update.status == 'pending_review' and update.pharmacy_notes:
+            log_communication(
+                conn, update.prescription_uuid,
+                'PHARMACIST_REQUEST_REVIEW', 'PHARMACIST', 0,
+                "Pharmacist", update.pharmacy_notes,
+                previous_status, update.status
+            )
         
         # Result is a RealDictRow, access by keys not indices
         result_dict = {
@@ -443,6 +478,291 @@ def update_prescription_status(update: PrescriptionStatusUpdate):
             status_code=500,
             content={"success": False, "message": f"Error updating prescription: {str(e)}"}
         )
+
+# Prescription review detail page
+@app.get("/prescription/{prescription_id}/review", response_class=HTMLResponse)
+def prescription_review_page(request: Request, prescription_id: int, user_id: int):
+    """Display prescription review page with communication history."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    try:
+        # Get user info
+        cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
+        user = cur.fetchone()
+        
+        # Get prescription details
+        query = """
+            SELECT 
+                pr.id,
+                pr.prescription_uuid,
+                pr.patient_id,
+                p.first_name || ' ' || p.last_name as patient_name,
+                pr.drug_name,
+                pr.quantity,
+                pr.refills,
+                pr.status,
+                pr.pharmacy_notes,
+                pr.created_at,
+                pr.updated_at
+            FROM prescription_requests pr
+            JOIN patients p ON pr.patient_id = p.patient_id
+            WHERE pr.id = %s AND pr.prescriber_id = %s
+        """
+        cur.execute(query, (prescription_id, user_id))
+        prescription = cur.fetchone()
+        
+        if not prescription:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail="Prescription not found")
+        
+        # Get communication history
+        cur.execute("""
+            SELECT * FROM prescription_communications
+            WHERE prescription_uuid = %s
+            ORDER BY created_at ASC
+        """, (prescription['prescription_uuid'],))
+        communications = cur.fetchall()
+        
+        # Debug output
+        print(f"\n[DEBUG] Prescription Review Page:")
+        print(f"  Prescription UUID: {prescription['prescription_uuid']}")
+        print(f"  Pharmacy Notes: {prescription.get('pharmacy_notes', 'None')}")
+        print(f"  Communications count: {len(communications)}")
+        if communications:
+            for i, comm in enumerate(communications):
+                print(f"  Communication {i+1}: {comm.get('action_type')} - {comm.get('comments', 'No comments')[:50]}")
+        print()
+        
+        cur.close()
+        conn.close()
+        
+        return templates.TemplateResponse("prescription_review.html", {
+            "request": request,
+            "user": user,
+            "prescription": prescription,
+            "communications": communications
+        })
+        
+    except Exception as e:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Get prescriptions under review
+@app.get("/api/prescriptions-under-review")
+def get_prescriptions_under_review(user_id: int):
+    """Get all prescriptions that are pending review from this doctor."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    try:
+        query = """
+            SELECT 
+                pr.id,
+                pr.prescription_uuid,
+                pr.patient_id,
+                p.first_name || ' ' || p.last_name as patient_name,
+                pr.drug_name,
+                pr.quantity,
+                pr.refills,
+                pr.status,
+                pr.pharmacy_notes,
+                pr.created_at,
+                pr.updated_at
+            FROM prescription_requests pr
+            JOIN patients p ON pr.patient_id = p.patient_id
+            WHERE pr.prescriber_id = %s 
+            AND pr.status IN ('pending_review', 'under_review')
+            ORDER BY pr.updated_at DESC
+        """
+        
+        cur.execute(query, (user_id,))
+        prescriptions = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        # Convert to serializable format
+        result = []
+        for p in prescriptions:
+            p_dict = dict(p)
+            # Convert datetime objects to strings
+            if p_dict.get('created_at'):
+                p_dict['created_at'] = p_dict['created_at'].isoformat()
+            if p_dict.get('updated_at'):
+                p_dict['updated_at'] = p_dict['updated_at'].isoformat()
+            result.append(p_dict)
+        
+        return JSONResponse(content={
+            "success": True,
+            "prescriptions": result
+        })
+        
+    except Exception as e:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        print(f"Error in get_prescriptions_under_review: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": f"Error fetching prescriptions: {str(e)}"}
+        )
+
+# Respond to review request
+@app.post("/prescription/{prescription_id}/respond")
+async def respond_to_review(
+    request: Request,
+    prescription_id: int,
+    user_id: int = Form(...),
+    response_action: str = Form(...),  # 'respond' or 'cancel'
+    response_comments: str = Form(None)
+):
+    """Doctor responds to pharmacist review request or cancels prescription."""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    try:
+        # Get prescription details
+        cur.execute(
+            "SELECT * FROM prescription_requests WHERE id = %s AND prescriber_id = %s",
+            (prescription_id, user_id)
+        )
+        prescription = cur.fetchone()
+        
+        if not prescription:
+            cur.close()
+            conn.close()
+            raise HTTPException(status_code=404, detail="Prescription not found")
+        
+        # Get doctor details
+        cur.execute("SELECT full_name FROM users WHERE user_id = %s", (user_id,))
+        doctor = cur.fetchone()
+        doctor_name = doctor['full_name'] if doctor else f"Doctor {user_id}"
+        
+        previous_status = prescription['status']
+        
+        if response_action == 'cancel':
+            # Cancel the prescription
+            new_status = 'cancelled'
+            
+            cur.execute("""
+                UPDATE prescription_requests
+                SET status = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (new_status, prescription_id))
+            
+            conn.commit()
+            
+            # Log communication
+            log_communication(
+                conn, prescription['prescription_uuid'],
+                'DOCTOR_CANCEL', 'DOCTOR', user_id,
+                doctor_name, response_comments or "Prescription cancelled", 
+                previous_status, new_status
+            )
+            
+            # Log to blockchain
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    blockchain_response = await client.post(
+                        "http://localhost:8001/doctor/cancel-prescription",
+                        json={
+                            "prescription_uuid": prescription['prescription_uuid'],
+                            "doctor_id": str(user_id),
+                            "cancellation_reason": response_comments or "Cancelled by doctor"
+                        }
+                    )
+                    if blockchain_response.status_code == 200:
+                        print(f"✓ Cancellation logged to blockchain for {prescription['prescription_uuid']}")
+            except Exception as bc_err:
+                print(f"⚠️  Blockchain cancellation logging error: {bc_err}")
+            
+            # Notify pharmacy
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"{PHARMACY_API_URL}/api/prescription-status-update",
+                        json={
+                            "prescription_uuid": prescription['prescription_uuid'],
+                            "status": "CANCELLED",
+                            "pharmacy_notes": response_comments or "Cancelled by doctor"
+                        }
+                    )
+            except Exception as e:
+                print(f"⚠️  Error notifying pharmacy: {e}")
+                
+        else:  # respond
+            # Update status to under_review
+            new_status = 'under_review'
+            
+            cur.execute("""
+                UPDATE prescription_requests
+                SET status = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (new_status, prescription_id))
+            
+            conn.commit()
+            
+            # Log communication
+            log_communication(
+                conn, prescription['prescription_uuid'],
+                'DOCTOR_RESPONSE', 'DOCTOR', user_id,
+                doctor_name, response_comments or "", 
+                previous_status, new_status
+            )
+            
+            # Log to blockchain
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    blockchain_response = await client.post(
+                        "http://localhost:8001/doctor/respond-to-review",
+                        json={
+                            "prescription_uuid": prescription['prescription_uuid'],
+                            "doctor_id": str(user_id),
+                            "doctor_name": doctor_name,
+                            "response_comments": response_comments or ""
+                        }
+                    )
+                    if blockchain_response.status_code == 200:
+                        print(f"✓ Doctor response logged to blockchain for {prescription['prescription_uuid']}")
+            except Exception as bc_err:
+                print(f"⚠️  Blockchain response logging error: {bc_err}")
+            
+            # Notify pharmacy
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"{PHARMACY_API_URL}/api/prescription-status-update",
+                        json={
+                            "prescription_uuid": prescription['prescription_uuid'],
+                            "status": "UNDER_REVIEW",
+                            "pharmacy_notes": response_comments or ""
+                        }
+                    )
+            except Exception as e:
+                print(f"⚠️  Error notifying pharmacy: {e}")
+        
+        cur.close()
+        conn.close()
+        
+        return RedirectResponse(
+            url=f"/prescriptions?user_id={user_id}",
+            status_code=303
+        )
+        
+    except Exception as e:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        print(f"Error responding to review: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

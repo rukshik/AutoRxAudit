@@ -121,6 +121,14 @@
             <a href="/create-prescription?user_id={{ user.user_id }}" class="btn btn-success">+ Create New Prescription</a>
         </div>
 
+        <!-- Prescriptions Needing Review Section -->
+        <div id="reviewSection" class="card mb-3" style="border-left: 4px solid #0dcaf0; display: none;">
+            <div class="card-body">
+                <h5 class="mb-3" style="color: #0dcaf0;">📋 Prescriptions Needing Your Review</h5>
+                <div id="reviewList"></div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-body">
                 <div class="table-responsive">
@@ -145,10 +153,16 @@
                                     <td class="status-col">
                                         {% if rx.status == 'sent_to_pharmacy' %}
                                             <span class="badge bg-warning text-dark status-badge">Sent To Pharmacy</span>
-                                        {% elif rx.status == 'approved' %}
+                                        {% elif rx.status == 'pending_review' %}
+                                            <span class="badge bg-info text-dark status-badge">Pending Review</span>
+                                        {% elif rx.status == 'under_review' %}
+                                            <span class="badge bg-info status-badge">Under Review</span>
+                                        {% elif rx.status == 'pharmacy_approved' %}
                                             <span class="badge bg-success status-badge">Approved</span>
-                                        {% elif rx.status == 'denied' %}
+                                        {% elif rx.status == 'pharmacy_denied' %}
                                             <span class="badge bg-danger status-badge">Denied</span>
+                                        {% elif rx.status == 'cancelled' %}
+                                            <span class="badge bg-secondary status-badge">Cancelled</span>
                                         {% else %}
                                             <span class="badge bg-secondary status-badge">{{ rx.status.replace('_', ' ').title() }}</span>
                                         {% endif %}
@@ -250,6 +264,33 @@
                         <div>OUD Risk Score: ${event.oud_risk_score}%</div>
                         <div class="mt-1"><em>${event.recommendation}</em></div>
                     `;
+                } else if (eventType === 'pharmacist_requests_review') {
+                    icon = '💊';
+                    color = 'info';
+                    title = 'Pharmacist Requests Review';
+                    details = `
+                        <div><strong>Pharmacist: ${event.pharmacist_name}</strong></div>
+                        <div>Pharmacist ID: ${event.pharmacist_id}</div>
+                        ${event.review_comments ? `<div class="mt-1"><em>${event.review_comments}</em></div>` : ''}
+                    `;
+                } else if (eventType === 'doctor_responds_to_review') {
+                    icon = '👨‍⚕️';
+                    color = 'primary';
+                    title = 'Doctor Responds to Review';
+                    details = `
+                        <div><strong>Doctor: ${event.doctor_name}</strong></div>
+                        <div>Doctor ID: ${event.doctor_id}</div>
+                        ${event.response_comments ? `<div class="mt-1"><em>${event.response_comments}</em></div>` : ''}
+                    `;
+                } else if (eventType === 'doctor_cancels_prescription') {
+                    icon = '❌';
+                    color = 'danger';
+                    title = 'Doctor Cancels Prescription';
+                    details = `
+                        <div><strong>Cancelled by Doctor</strong></div>
+                        <div>Doctor ID: ${event.doctor_id}</div>
+                        ${event.cancellation_reason ? `<div class="mt-1"><em>${event.cancellation_reason}</em></div>` : ''}
+                    `;
                 } else if (eventType === 'pharmacist_decision') {
                     icon = '👨‍⚕️';
                     color = event.action === 'APPROVED' ? 'success' : 'danger';
@@ -337,6 +378,55 @@
             `;
         }
     }
+    
+    // Load prescriptions under review on page load
+    window.addEventListener('DOMContentLoaded', async function() {
+        try {
+            const userId = {{ user.user_id }};
+            const response = await fetch(`/api/prescriptions-under-review?user_id=${userId}`);
+            const data = await response.json();
+            
+            if (data.success && data.prescriptions.length > 0) {
+                const reviewSection = document.getElementById('reviewSection');
+                const reviewList = document.getElementById('reviewList');
+                
+                let html = '';
+                data.prescriptions.forEach(rx => {
+                    const shortUuid = rx.prescription_uuid ? rx.prescription_uuid.substring(0, 8) : `RX-${rx.id}`;
+                    html += `
+                        <div class="card mb-2" style="border-left: 3px solid #0dcaf0;">
+                            <div class="card-body py-2">
+                                <div class="row align-items-center">
+                                    <div class="col-md-3">
+                                        <strong>${rx.patient_name}</strong><br>
+                                        <small class="text-muted">${rx.drug_name}</small><br>
+                                        <small class="text-muted" style="font-family: monospace;">ID: ${shortUuid}</small>
+                                    </div>
+                                    <div class="col-md-5">
+                                        <strong>Pharmacist's Question:</strong><br>
+                                        <small>${rx.pharmacy_notes || 'No specific question provided'}</small>
+                                    </div>
+                                    <div class="col-md-2 text-center">
+                                        <span class="badge bg-info">${rx.status.replace('_', ' ').toUpperCase()}</span>
+                                    </div>
+                                    <div class="col-md-2 text-end">
+                                        <a href="/prescription/${rx.id}/review?user_id={{ user.user_id }}" class="btn btn-sm btn-primary">
+                                            Review
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                reviewList.innerHTML = html;
+                reviewSection.style.display = 'block';
+            }
+        } catch (error) {
+            console.error('Error loading review requests:', error);
+        }
+    });
     </script>
 </body>
 </html>

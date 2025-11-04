@@ -36,11 +36,40 @@ contract PharmacyWorkflowAudit {
         uint256 timestamp
     );
     
+    // Event 4: Pharmacist requests further review from doctor
+    event PharmacistRequestsReview(
+        string indexed prescriptionUuid,
+        string pharmacistId,
+        string pharmacistName,
+        string reviewComments,
+        uint256 timestamp
+    );
+    
+    // Event 5: Doctor responds to review request
+    event DoctorRespondsToReview(
+        string indexed prescriptionUuid,
+        string doctorId,
+        string doctorName,
+        string responseComments,
+        uint256 timestamp
+    );
+    
+    // Event 6: Doctor cancels prescription
+    event DoctorCancelsPrescription(
+        string indexed prescriptionUuid,
+        string doctorId,
+        string cancellationReason,
+        uint256 timestamp
+    );
+    
     // State variables
     address public owner;
     uint256 public totalPrescriptions;
     uint256 public totalAIReviews;
     uint256 public totalPharmacistDecisions;
+    uint256 public totalReviewRequests;
+    uint256 public totalDoctorResponses;
+    uint256 public totalCancellations;
     
     // Track which prescriptions have been logged (prevents duplicate creation)
     mapping(string => bool) public prescriptionExists;
@@ -50,6 +79,9 @@ contract PharmacyWorkflowAudit {
         totalPrescriptions = 0;
         totalAIReviews = 0;
         totalPharmacistDecisions = 0;
+        totalReviewRequests = 0;
+        totalDoctorResponses = 0;
+        totalCancellations = 0;
     }
     
     /**
@@ -138,13 +170,101 @@ contract PharmacyWorkflowAudit {
     }
     
     /**
+     * @dev Log pharmacist request for further review
+     * @param prescriptionUuid Unique prescription identifier
+     * @param pharmacistId Pharmacist's user ID
+     * @param pharmacistName Pharmacist's name
+     * @param reviewComments Comments explaining what needs review
+     */
+    function logPharmacistRequestsReview(
+        string memory prescriptionUuid,
+        string memory pharmacistId,
+        string memory pharmacistName,
+        string memory reviewComments
+    ) external {
+        require(bytes(prescriptionUuid).length > 0, "Prescription UUID cannot be empty");
+        require(bytes(pharmacistId).length > 0, "Pharmacist ID cannot be empty");
+        
+        totalReviewRequests++;
+        
+        emit PharmacistRequestsReview(
+            prescriptionUuid,
+            pharmacistId,
+            pharmacistName,
+            reviewComments,
+            block.timestamp
+        );
+    }
+    
+    /**
+     * @dev Log doctor's response to review request
+     * @param prescriptionUuid Unique prescription identifier
+     * @param doctorId Doctor's user ID
+     * @param doctorName Doctor's name
+     * @param responseComments Doctor's explanation/justification
+     */
+    function logDoctorRespondsToReview(
+        string memory prescriptionUuid,
+        string memory doctorId,
+        string memory doctorName,
+        string memory responseComments
+    ) external {
+        require(bytes(prescriptionUuid).length > 0, "Prescription UUID cannot be empty");
+        require(bytes(doctorId).length > 0, "Doctor ID cannot be empty");
+        
+        totalDoctorResponses++;
+        
+        emit DoctorRespondsToReview(
+            prescriptionUuid,
+            doctorId,
+            doctorName,
+            responseComments,
+            block.timestamp
+        );
+    }
+    
+    /**
+     * @dev Log doctor cancellation of prescription
+     * @param prescriptionUuid Unique prescription identifier
+     * @param doctorId Doctor's user ID
+     * @param cancellationReason Reason for cancellation
+     */
+    function logDoctorCancelsPrescription(
+        string memory prescriptionUuid,
+        string memory doctorId,
+        string memory cancellationReason
+    ) external {
+        require(bytes(prescriptionUuid).length > 0, "Prescription UUID cannot be empty");
+        require(bytes(doctorId).length > 0, "Doctor ID cannot be empty");
+        
+        totalCancellations++;
+        
+        emit DoctorCancelsPrescription(
+            prescriptionUuid,
+            doctorId,
+            cancellationReason,
+            block.timestamp
+        );
+    }
+    
+    /**
      * @dev Get contract statistics
      */
     function getStatistics() external view returns (
         uint256 prescriptions,
         uint256 aiReviews,
-        uint256 pharmacistDecisions
+        uint256 pharmacistDecisions,
+        uint256 reviewRequests,
+        uint256 doctorResponses,
+        uint256 cancellations
     ) {
-        return (totalPrescriptions, totalAIReviews, totalPharmacistDecisions);
+        return (
+            totalPrescriptions, 
+            totalAIReviews, 
+            totalPharmacistDecisions,
+            totalReviewRequests,
+            totalDoctorResponses,
+            totalCancellations
+        );
     }
 }

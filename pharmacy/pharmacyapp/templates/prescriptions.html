@@ -68,6 +68,8 @@
         .status-ai-error { background-color: #dc3545; }
         .status-approved { background-color: #198754; }
         .status-declined { background-color: #dc3545; }
+        .status-pending-review { background-color: #0dcaf0; color: #000; }
+        .status-under-review { background-color: #17a2b8; color: #fff; }
         .rx-link {
             color: #667eea;
             text-decoration: none;
@@ -95,8 +97,60 @@
 
     <div class="main-content">
         <div class="container-fluid">
+            <!-- Prescriptions Requiring Action Section -->
+            {% set action_needed = prescriptions|selectattr('status', 'in', ['RECEIVED', 'AI_APPROVED', 'AI_FLAGGED', 'AI_ERROR', 'UNDER_REVIEW'])|list %}
+            {% if action_needed|length > 0 %}
+            <div class="prescriptions-card mb-3" style="border-left: 4px solid #ffc107; background: #fff9e6;">
+                <h2 style="color: #ff9800;">⚠️ Prescriptions Requiring Action ({{ action_needed|length }})</h2>
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th class="rx-id-col">Rx ID</th>
+                                <th class="patient-col">Patient Name</th>
+                                <th class="drug-col">Drug</th>
+                                <th class="status-col">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for prescription in action_needed %}
+                            <tr style="background: {% if prescription.status in ['AI_FLAGGED', 'AI_ERROR'] %}#fff3cd{% else %}white{% endif %};">
+                                <td class="rx-id-col">
+                                    <a href="/pharmacy/prescription/{{ prescription.prescription_id }}?user_id={{ user.user_id }}" class="rx-link">
+                                        {% if prescription.prescription_uuid %}
+                                            {{ prescription.prescription_uuid }}
+                                        {% else %}
+                                            RX-{{ prescription.prescription_id }}
+                                        {% endif %}
+                                    </a>
+                                </td>
+                                <td class="patient-col">{{ prescription.patient_name or prescription.patient_id }}</td>
+                                <td class="drug-col">{{ prescription.drug_name }}</td>
+                                <td class="status-col">
+                                    {% if prescription.status == 'RECEIVED' %}
+                                        <span class="badge status-received">Received</span>
+                                    {% elif prescription.status == 'AI_APPROVED' %}
+                                        <span class="badge status-ai-approved">AI Approved</span>
+                                    {% elif prescription.status == 'AI_FLAGGED' %}
+                                        <span class="badge status-ai-flagged">AI Flagged</span>
+                                    {% elif prescription.status == 'AI_ERROR' %}
+                                        <span class="badge status-ai-error">AI Error</span>
+                                    {% elif prescription.status == 'UNDER_REVIEW' %}
+                                        <span class="badge status-under-review">Under Review</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">{{ prescription.status }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="prescriptions-card">
-                <h2>Prescription Queue</h2>
+                <h2>All Prescriptions</h2>
                 
                 {% if prescriptions|length == 0 %}
                 <div class="alert alert-info">
@@ -136,6 +190,10 @@
                                         <span class="badge status-ai-flagged">AI Flagged</span>
                                     {% elif prescription.status == 'AI_ERROR' %}
                                         <span class="badge status-ai-error">AI Error</span>
+                                    {% elif prescription.status == 'PENDING_REVIEW' %}
+                                        <span class="badge status-pending-review">Pending Review</span>
+                                    {% elif prescription.status == 'UNDER_REVIEW' %}
+                                        <span class="badge status-under-review">Under Review</span>
                                     {% elif prescription.status == 'APPROVED' %}
                                         <span class="badge status-approved">Approved</span>
                                     {% elif prescription.status == 'DECLINED' %}

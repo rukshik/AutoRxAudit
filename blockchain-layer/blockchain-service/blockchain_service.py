@@ -501,12 +501,50 @@ PHARMACY_WORKFLOW_ABI = [
         "type": "function"
     },
     {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "string", "name": "pharmacistId", "type": "string"},
+            {"internalType": "string", "name": "pharmacistName", "type": "string"},
+            {"internalType": "string", "name": "reviewComments", "type": "string"}
+        ],
+        "name": "logPharmacistRequestsReview",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "string", "name": "doctorId", "type": "string"},
+            {"internalType": "string", "name": "doctorName", "type": "string"},
+            {"internalType": "string", "name": "responseComments", "type": "string"}
+        ],
+        "name": "logDoctorRespondsToReview",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"internalType": "string", "name": "doctorId", "type": "string"},
+            {"internalType": "string", "name": "cancellationReason", "type": "string"}
+        ],
+        "name": "logDoctorCancelsPrescription",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
         "inputs": [],
         "name": "getStatistics",
         "outputs": [
             {"internalType": "uint256", "name": "prescriptions", "type": "uint256"},
             {"internalType": "uint256", "name": "aiReviews", "type": "uint256"},
-            {"internalType": "uint256", "name": "pharmacistDecisions", "type": "uint256"}
+            {"internalType": "uint256", "name": "pharmacistDecisions", "type": "uint256"},
+            {"internalType": "uint256", "name": "reviewRequests", "type": "uint256"},
+            {"internalType": "uint256", "name": "doctorResponses", "type": "uint256"},
+            {"internalType": "uint256", "name": "cancellations", "type": "uint256"}
         ],
         "stateMutability": "view",
         "type": "function"
@@ -546,6 +584,41 @@ PHARMACY_WORKFLOW_ABI = [
         ],
         "name": "PharmacistDecision",
         "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "pharmacistId", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "pharmacistName", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "reviewComments", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "PharmacistRequestsReview",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "doctorId", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "doctorName", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "responseComments", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "DoctorRespondsToReview",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "string", "name": "prescriptionUuid", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "doctorId", "type": "string"},
+            {"indexed": False, "internalType": "string", "name": "cancellationReason", "type": "string"},
+            {"indexed": False, "internalType": "uint256", "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "DoctorCancelsPrescription",
+        "type": "event"
     }
 ]
 
@@ -567,6 +640,23 @@ class PharmacistDecisionRequest(BaseModel):
     pharmacist_id: str
     action: str  # "APPROVED" or "DECLINED"
     action_reason: str = ""
+
+class PharmacistRequestsReviewRequest(BaseModel):
+    prescription_uuid: str
+    pharmacist_id: str
+    pharmacist_name: str
+    review_comments: str
+
+class DoctorRespondsToReviewRequest(BaseModel):
+    prescription_uuid: str
+    doctor_id: str
+    doctor_name: str
+    response_comments: str
+
+class DoctorCancelsPrescriptionRequest(BaseModel):
+    prescription_uuid: str
+    doctor_id: str
+    cancellation_reason: str
 
 @app.post("/pharmacy/prescription-created")
 async def log_prescription_created(request: PrescriptionCreatedRequest):
@@ -670,6 +760,107 @@ async def log_pharmacist_decision(request: PharmacistDecisionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log pharmacist decision: {str(e)}")
 
+@app.post("/pharmacy/request-review")
+async def log_pharmacist_requests_review(request: PharmacistRequestsReviewRequest):
+    """Log pharmacist requesting doctor review to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logPharmacistRequestsReview(
+            request.prescription_uuid,
+            request.pharmacist_id,
+            request.pharmacist_name,
+            request.review_comments
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "Pharmacist review request logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log review request: {str(e)}")
+
+@app.post("/doctor/respond-to-review")
+async def log_doctor_responds_to_review(request: DoctorRespondsToReviewRequest):
+    """Log doctor response to review request to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logDoctorRespondsToReview(
+            request.prescription_uuid,
+            request.doctor_id,
+            request.doctor_name,
+            request.response_comments
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "Doctor response logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log doctor response: {str(e)}")
+
+@app.post("/doctor/cancel-prescription")
+async def log_doctor_cancels_prescription(request: DoctorCancelsPrescriptionRequest):
+    """Log doctor prescription cancellation to blockchain"""
+    if not w3 or not pharmacy_contract:
+        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+    
+    try:
+        # Build transaction
+        tx = pharmacy_contract.functions.logDoctorCancelsPrescription(
+            request.prescription_uuid,
+            request.doctor_id,
+            request.cancellation_reason
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 300000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, private_key=DEPLOYER_PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return {
+            "success": True,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": "Prescription cancellation logged to blockchain"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to log cancellation: {str(e)}")
+
 @app.get("/pharmacy/prescription-trail/{prescription_uuid}")
 async def get_prescription_trail(prescription_uuid: str):
     """Get complete audit trail for a prescription from blockchain events"""
@@ -690,11 +881,26 @@ async def get_prescription_trail(prescription_uuid: str):
             fromBlock=0,
             argument_filters={'prescriptionUuid': prescription_uuid}
         )
+        pharmacist_request_filter = pharmacy_contract.events.PharmacistRequestsReview.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
+        doctor_response_filter = pharmacy_contract.events.DoctorRespondsToReview.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
+        doctor_cancel_filter = pharmacy_contract.events.DoctorCancelsPrescription.create_filter(
+            fromBlock=0,
+            argument_filters={'prescriptionUuid': prescription_uuid}
+        )
         
         # Fetch events
         created_events = prescription_created_filter.get_all_entries()
         ai_review_events = ai_review_filter.get_all_entries()
         decision_events = pharmacist_decision_filter.get_all_entries()
+        request_review_events = pharmacist_request_filter.get_all_entries()
+        doctor_response_events = doctor_response_filter.get_all_entries()
+        doctor_cancel_events = doctor_cancel_filter.get_all_entries()
         
         # Build timeline
         timeline = []
@@ -732,6 +938,38 @@ async def get_prescription_trail(prescription_uuid: str):
                 "transaction_hash": event.transactionHash.hex()
             })
         
+        for event in request_review_events:
+            timeline.append({
+                "event_type": "pharmacist_requests_review",
+                "timestamp": event.args.timestamp,
+                "pharmacist_id": event.args.pharmacistId,
+                "pharmacist_name": event.args.pharmacistName,
+                "review_comments": event.args.reviewComments,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
+        for event in doctor_response_events:
+            timeline.append({
+                "event_type": "doctor_responds_to_review",
+                "timestamp": event.args.timestamp,
+                "doctor_id": event.args.doctorId,
+                "doctor_name": event.args.doctorName,
+                "response_comments": event.args.responseComments,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
+        for event in doctor_cancel_events:
+            timeline.append({
+                "event_type": "doctor_cancels_prescription",
+                "timestamp": event.args.timestamp,
+                "doctor_id": event.args.doctorId,
+                "cancellation_reason": event.args.cancellationReason,
+                "block_number": event.blockNumber,
+                "transaction_hash": event.transactionHash.hex()
+            })
+        
         # Sort by block number (primary) and timestamp (secondary) to ensure correct chronological order
         timeline.sort(key=lambda x: (x['block_number'], x['timestamp']))
         
@@ -754,7 +992,10 @@ async def get_pharmacy_statistics():
         return {
             "total_prescriptions": stats[0],
             "total_ai_reviews": stats[1],
-            "total_pharmacist_decisions": stats[2]
+            "total_pharmacist_decisions": stats[2],
+            "total_review_requests": stats[3],
+            "total_doctor_responses": stats[4],
+            "total_cancellations": stats[5]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch statistics: {str(e)}")
