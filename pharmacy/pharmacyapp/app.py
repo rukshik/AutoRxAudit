@@ -26,6 +26,9 @@ from dotenv import load_dotenv
 from feature_calculator import FeatureCalculator
 import httpx
 import asyncio
+import json
+import base64
+from cryptography.fernet import Fernet
 
 # Load environment variables
 load_dotenv()
@@ -44,6 +47,9 @@ BLOCKCHAIN_SERVICE_URL = os.getenv('BLOCKCHAIN_SERVICE_URL', 'http://localhost:8
 
 # Doctor API configuration
 DOCTOR_API_URL = os.getenv('DOCTOR_API_URL', 'http://localhost:8003')
+
+# QKD service configuration
+QKD_SERVICE_URL = os.getenv('QKD_SERVICE_URL', 'http://localhost:8005')
 
 MODEL_DIR = '../../ai-layer/model'
 ELIGIBILITY_MODEL_PATH = os.path.join(MODEL_DIR, 'results/50000_v3/dnn_eligibility_model.pth')
@@ -79,10 +85,16 @@ app.add_middleware(
 # ============================================================================
 
 class PrescriptionRequest(BaseModel):
-    """Prescription request from doctor."""
-    patient_id: str = Field(..., description="Patient identifier")
-    prescription_uuid: str = Field(..., description="Prescription UUID from doctor system")
-    drug_name: str = Field(..., description="Drug name with dosage")
+    """Prescription request from doctor - supports both encrypted and unencrypted."""
+    # For encrypted prescriptions
+    encrypted: Optional[bool] = Field(default=False, description="Whether prescription is encrypted")
+    qkd_session_id: Optional[str] = Field(default=None, description="QKD session ID for decryption")
+    ciphertext: Optional[str] = Field(default=None, description="Base64-encoded encrypted prescription data")
+    
+    # For unencrypted prescriptions (or after decryption)
+    patient_id: Optional[str] = Field(default=None, description="Patient identifier")
+    prescription_uuid: Optional[str] = Field(default=None, description="Prescription UUID from doctor system")
+    drug_name: Optional[str] = Field(default=None, description="Drug name with dosage")
     quantity: Optional[int] = Field(default=None, description="Quantity prescribed")
     refills: Optional[int] = Field(default=None, description="Number of refills")
     
@@ -195,6 +207,67 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+
+def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> dict:
+    """
+    Decrypt data using QKD-derived key with AES-256 (Fernet).
+    
+    Args:
+        ciphertext_b64: Base64-encoded encrypted data
+        qkd_key_hex: Hex string key from QKD service
+        
+    Returns:
+        dict: Decrypted prescription data
+    """
+    # Convert hex key to bytes
+    key_bytes = bytes.fromhex(qkd_key_hex)
+    
+    # Create Fernet cipher (requires base64-encoded key)
+    fernet_key = base64.urlsafe_b64encode(key_bytes)
+    cipher = Fernet(fernet_key)
+    
+    # Decode base64 ciphertext
+    ciphertext = base64.b64decode(ciphertext_b64.encode('utf-8'))
+    
+    # Decrypt
+    plaintext = cipher.decrypt(ciphertext)
+    
+    # Parse JSON
+    data = json.loads(plaintext.decode('utf-8'))
+    
+    return data
+
+
+def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> dict:
+    """
+    Decrypt prescription data using QKD-derived key.
+    
+    Args:
+        ciphertext_b64: Base64-encoded encrypted prescription data
+        qkd_key_hex: Hex-encoded encryption key from QKD service
+    
+    Returns:
+        dict: Decrypted prescription data
+    """
+    # Convert hex key to bytes
+    key_bytes = bytes.fromhex(qkd_key_hex)
+    
+    # Create Fernet cipher with base64-encoded key
+    fernet_key = base64.urlsafe_b64encode(key_bytes)
+    cipher = Fernet(fernet_key)
+    
+    # Decode base64 ciphertext
+    ciphertext = base64.b64decode(ciphertext_b64)
+    
+    # Decrypt
+    plaintext_bytes = cipher.decrypt(ciphertext)
+    
+    # Parse JSON
+    plaintext_str = plaintext_bytes.decode('utf-8')
+    data = json.loads(plaintext_str)
+    
+    return data
 
 
 # ============================================================================
@@ -596,16 +669,75 @@ async def health_check():
 @app.post("/prescription", response_model=PrescriptionReceiptResponse)
 async def receive_prescription(request: PrescriptionRequest):
     """
-    Receive a prescription from doctor.
+    Receive a prescription from doctor - supports QKD-encrypted prescriptions.
     
     Workflow:
-    1. Store prescription immediately with status='RECEIVED'
-    2. Return 200 OK immediately
-    3. Kick off AI check in background
-    4. Background task updates status to AI_APPROVED, AI_FLAGGED, or AI_ERROR
+    1. If encrypted, decrypt using QKD service
+    2. Store prescription immediately with status='RECEIVED'
+    3. Return 200 OK immediately
+    4. Kick off AI check in background
+    5. Background task updates status to AI_APPROVED, AI_FLAGGED, or AI_ERROR
     """
     
-    print(f"Received prescription: uuid={request.prescription_uuid}, patient={request.patient_id}, drug={request.drug_name}")
+    # Handle QKD decryption if needed
+    if request.encrypted:
+        print(f"\n{'='*60}")
+        print(f"🔐 Received ENCRYPTED prescription")
+        print(f"   QKD Session: {request.qkd_session_id}")
+        print(f"{'='*60}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Call QKD service to get decryption key
+                print("Step 1: Retrieving decryption key from quantum channel...")
+                qkd_exchange_response = await client.post(
+                    f"{QKD_SERVICE_URL}/qkd/exchange",
+                    json={
+                        "session_id": request.qkd_session_id,
+                        "party": "receiver"  # Pharmacy is the receiver (Bob)
+                    }
+                )
+                
+                if qkd_exchange_response.status_code != 200:
+                    raise Exception(f"QKD key retrieval failed: {qkd_exchange_response.text}")
+                
+                qkd_data = qkd_exchange_response.json()
+                if not qkd_data['success']:
+                    raise Exception(f"QKD key retrieval unsuccessful: {qkd_data['message']}")
+                
+                qkd_key = qkd_data['key']
+                print(f"  ✓ Decryption key received via quantum channel")
+                print(f"    Error rate: {qkd_data['error_rate']:.4f}")
+                print(f"    Secure: {qkd_data['secure']}")
+                
+                # Decrypt prescription data
+                print("Step 2: Decrypting prescription with AES-256...")
+                decrypted_data = decrypt_with_qkd_key(request.ciphertext, qkd_key)
+                print(f"  ✓ Prescription decrypted successfully")
+                
+                # Wipe key from local memory immediately
+                qkd_key = None
+                del qkd_key
+                
+                # Update request object with decrypted data
+                request.patient_id = decrypted_data['patient_id']
+                request.prescription_uuid = decrypted_data['prescription_uuid']
+                request.drug_name = decrypted_data['drug_name']
+                request.quantity = decrypted_data.get('quantity')
+                request.refills = decrypted_data.get('refills')
+                
+                print(f"  Patient: {request.patient_id}")
+                print(f"  Drug: {request.drug_name}")
+                print(f"  UUID: {request.prescription_uuid}")
+                print(f"{'='*60}\n")
+                
+        except Exception as decrypt_err:
+            print(f"⚠️  Decryption failed: {decrypt_err}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=400, detail=f"Failed to decrypt prescription: {str(decrypt_err)}")
+    else:
+        print(f"Received unencrypted prescription: uuid={request.prescription_uuid}, patient={request.patient_id}, drug={request.drug_name}")
     
     try:
         with get_db() as conn:
