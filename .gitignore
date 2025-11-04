@@ -18,6 +18,9 @@ datasets/synthetic_mimic_v2/100000/
 *.pkl
 logs.log
 
+# Research papers (documentation)
+RESEARCH_PAPER*.md
+
 # Temporary SHAP data (can be regenerated)
 ai-layer/feature_selection/temp_data*/
 !ai-layer/feature_selection/temp_data/.gitkeep
