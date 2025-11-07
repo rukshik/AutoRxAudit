@@ -1,13 +1,5 @@
 """
-SHAP-Based Feature Selection for Two-Model Opioid Audit System
-
-This script prepares data for a two-model prescription audit system:
-1. Eligibility Model: Predicts if patient has clinical need for opioids (based on pain diagnoses)
-2. OUD Risk Model: Predicts if patient is at risk of developing Opioid Use Disorder
-
-Audit Logic: Flag prescription if (Eligibility=NO) OR (OUD_Risk=HIGH)
-
-Both models train on ALL patients for preventive risk assessment.
+SHAP-Based Feature Selection
 
 Usage:
   python shap_feature_selection.py
@@ -15,13 +7,12 @@ Usage:
   python shap_feature_selection.py --output-dir ../processed_data_100k --temp-dir temp_data_100k
 """
 
+from email import parser
 import os
 import sys
 
-# Prevent PyTorch from loading by mocking it before SHAP import
-# SHAP doesn't need PyTorch for tree-based models
+# SHAP is giving trouble with PyTorch, but we don't need it. So mocking
 class MockTorch:
-    """Mock torch module to prevent SHAP from loading real PyTorch"""
     def __getattr__(self, name):
         raise ImportError("PyTorch not available (mocked for feature selection)")
 
@@ -37,23 +28,20 @@ from sklearn.preprocessing import LabelEncoder
 import warnings
 import argparse
 
-# Now import SHAP - it will see the mock torch and skip PyTorch features
 from shap import TreeExplainer
 
 warnings.filterwarnings("ignore")
 
-
-def read_csv(rel_path: str, demo_dir: str) -> pd.DataFrame:
-    """Read CSV file from the given directory"""
-    path = os.path.join(demo_dir, rel_path)
+# read csv file from a directory onto pandas
+def read_csv(rel_path, dir_path):
+    path = os.path.join(dir_path, rel_path)
     if not os.path.exists(path):
-        print(f"[ERROR] Missing file: {path}", file=sys.stderr)
+        print(f"[ERROR] Missing file: {path}")
         sys.exit(1)
     return pd.read_csv(path)
 
-
-def mode_or_nan(series: pd.Series):
-    """Return mode of series or NaN if empty"""
+# Mode of a series or Numphy.Nan if empty
+def mode_or_nan(series):
     if series.empty:
         return np.nan
     vc = series.value_counts(dropna=True)
@@ -61,28 +49,27 @@ def mode_or_nan(series: pd.Series):
         return np.nan
     return vc.idxmax()
 
-
+# Age at first hospital admission 
 def compute_age_at_first_admit(
-    patients: pd.DataFrame, admissions: pd.DataFrame
-) -> pd.DataFrame:
-    """Calculate patient age at first admission"""
+    patients, admissions
+):
     first_admit = (
         admissions.sort_values("admittime")
         .groupby("subject_id", as_index=False)
         .first()[["subject_id", "hadm_id", "admittime"]]
     )
-    demo = patients.merge(first_admit, on="subject_id", how="left")
-    demo["admittime"] = pd.to_datetime(demo["admittime"], errors="coerce")
-    admit_year = demo["admittime"].dt.year
-    demo["age_at_first_admit"] = admit_year - (demo["anchor_year"] - demo["anchor_age"])
-    demo["age_at_first_admit"] = (
-        demo["age_at_first_admit"].clip(lower=0, upper=120).fillna(0)
+    hosp = patients.merge(first_admit, on="subject_id", how="left")
+    hosp["admittime"] = pd.to_datetime(hosp["admittime"], errors="coerce")
+    admit_year = hosp["admittime"].dt.year
+    hosp["age_at_first_admit"] = admit_year - (hosp["anchor_year"] - hosp["anchor_age"])
+    hosp["age_at_first_admit"] = (
+        hosp["age_at_first_admit"].clip(lower=0, upper=120).fillna(0)
     )
-    return demo[["subject_id", "gender", "age_at_first_admit"]]
+    return hosp[["subject_id", "gender", "age_at_first_admit"]]
 
 
-def aggregate_race_insurance(admissions: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate admission-level race/insurance and calculate hospital utilization"""
+# get race, insurance, number of hostpital admissions, and averge and total length of hospital stays
+def aggregate_race_insurance(admissions):
     agg = (
         admissions.groupby("subject_id")
         .agg(
@@ -100,8 +87,8 @@ def aggregate_race_insurance(admissions: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def compute_los_days(admissions: pd.DataFrame) -> pd.DataFrame:
-    """Calculate length of stay in days"""
+# caculate length of hospital stays
+def compute_los_days(admissions):
     adm = admissions.copy()
     adm["admittime"] = pd.to_datetime(adm["admittime"], errors="coerce")
     adm["dischtime"] = pd.to_datetime(adm["dischtime"], errors="coerce")
@@ -147,9 +134,8 @@ ATC_LABELS = {
     "R": "Respiratory",
 }
 
-
-def atc_group(drug: str) -> str:
-    """Map drug name to ATC category"""
+# Map a drug to ATC group
+def atc_group(drug):
     if not isinstance(drug, str):
         return "Other"
     drug_l = drug.lower()
@@ -159,9 +145,10 @@ def atc_group(drug: str) -> str:
     return "Other"
 
 
-def build_rx_features_atc(prescriptions: pd.DataFrame) -> pd.DataFrame:
-    """Build prescription features including opioid, benzo, and ATC categories"""
-    print("     • Classifying drugs (opioids, benzos, other)...", end=" ", flush=True)
+# build prescription drug feature set
+def build_rx_features_atc(prescriptions):
+
+    # Opioids
     rx = prescriptions.copy()
     rx["is_opioid"] = rx["drug"].apply(
         lambda s: any(p in str(s).lower() for p in OPIOID_PATTERNS)
@@ -173,18 +160,15 @@ def build_rx_features_atc(prescriptions: pd.DataFrame) -> pd.DataFrame:
     opioid = rx[rx["is_opioid"]].copy()
     benzo = rx[rx["is_benzo"]].copy()
     other = rx[(~rx["is_opioid"]) & (~rx["is_benzo"])]
-    print(f"✓ ({len(opioid)} opioids, {len(benzo)} benzos)")
     
-    # ATC grouping for "other" drugs
-    print("     • Mapping ATC drug classes...", end=" ", flush=True)
+    # "Other" drugs
     other["atc_group"] = other["drug"].apply(atc_group)
     atc_counts = other.groupby(["subject_id", "atc_group"]).size().unstack(fill_value=0)
     atc_counts.columns = [f"atc_{col}_rx_count" for col in atc_counts.columns]
     atc_counts = atc_counts.reset_index()
-    print("✓")
 
-    def agg_rx(df: pd.DataFrame, kind: str) -> pd.DataFrame:
-        """Aggregate prescription data by patient"""
+    # prescription data by patient
+    def agg_rx(df, kind):
         if df.empty:
             return pd.DataFrame(columns=[
                 "subject_id", f"{kind}_rx_count", f"{kind}_hadms", 
@@ -203,12 +187,8 @@ def build_rx_features_atc(prescriptions: pd.DataFrame) -> pd.DataFrame:
         }).reset_index()
         return g
 
-    print("     • Aggregating opioid features by patient...", end=" ", flush=True)
     opioid_agg = agg_rx(opioid, "opioid")
-    print("✓")
-    print("     • Aggregating benzo features by patient...", end=" ", flush=True)
     benzo_agg = agg_rx(benzo, "benzo")
-    print("✓")
     
     # Create flags
     benzo_flag = (
@@ -234,12 +214,12 @@ def build_rx_features_atc(prescriptions: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_oud_label(diagnoses: pd.DataFrame) -> pd.DataFrame:
-    """Create OUD label from ICD diagnosis codes"""
+# build oud label based on dignosis codes
+def build_oud_label(diagnoses):
     d = diagnoses.copy()
     d["icd_code"] = d["icd_code"].astype(str).str.upper().str.replace(".", "", regex=False)
 
-    def is_oud(row) -> int:
+    def is_oud(row):
         ver = int(row["icd_version"]) if not pd.isna(row["icd_version"]) else None
         code = row["icd_code"]
         if ver == 9:
@@ -255,7 +235,7 @@ def build_oud_label(diagnoses: pd.DataFrame) -> pd.DataFrame:
     return lbl
 
 
-def build_opioid_eligibility_label(diagnoses: pd.DataFrame) -> pd.DataFrame:
+def build_opioid_eligibility_label(diagnoses):
     """
     Create opioid eligibility label based on pain-related diagnoses.
     Patient is eligible (=1) if they have any pain-related condition that would justify opioid use.
@@ -302,11 +282,10 @@ def build_opioid_eligibility_label(diagnoses: pd.DataFrame) -> pd.DataFrame:
     return eligibility
 
 
-def prepare_features_for_shap(df: pd.DataFrame) -> tuple:
-    """Encode categorical variables and prepare features for SHAP analysis"""
+def prepare_features_for_shap(df):
     df_processed = df.copy()
 
-    # Handle categorical variables
+    # encode gender, race and insurance for consistancy 
     categorical_cols = ["gender", "race", "insurance"]
     label_encoders = {}
 
@@ -317,13 +296,13 @@ def prepare_features_for_shap(df: pd.DataFrame) -> tuple:
             df_processed[col] = le.fit_transform(df_processed[col].astype(str))
             label_encoders[col] = le
 
-    # Fill missing values for numeric columns
+    # missing numerical values with zero
     numeric_cols = df_processed.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
         if col not in ["subject_id", "y_oud", "will_get_opioid_rx"]:
             df_processed[col] = df_processed[col].fillna(0)
 
-    # Separate features and targets
+    # targets vs training features
     feature_cols = [
         col for col in df_processed.columns
         if col not in ["subject_id", "y_oud", "will_get_opioid_rx", "opioid_eligibility"]
@@ -337,11 +316,8 @@ def prepare_features_for_shap(df: pd.DataFrame) -> tuple:
     return X, y_oud, y_rx, y_eligibility, feature_cols, label_encoders
 
 
-def get_shap_feature_importance(
-    X: pd.DataFrame, y: pd.Series, target_name: str, top_n: int = 15
-) -> list:
-    """Use SHAP to identify the most important features for a given target"""
-    print(f"\n=== SHAP Analysis for {target_name} ===")
+# have SHAP caculate feature importance - called separatly for eligibility and oud
+def get_shap_feature_importance(X, y, target_name, top_n=15):
 
     # Check if target has enough positive cases
     if y.sum() < 2:
@@ -353,26 +329,21 @@ def get_shap_feature_importance(
         X, y, test_size=0.3, random_state=42, stratify=y if y.sum() >= 2 else None
     )
 
-    # Train Random Forest model
-    print(f"Training Random Forest model for {target_name}...", end=" ", flush=True)
+    # Train Random Forest model, which is typical for SHAP analysis
     model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
     
     train_acc = model.score(X_train, y_train)
     test_acc = model.score(X_test, y_test)
-    print(f"✓ (Train: {train_acc:.3f}, Test: {test_acc:.3f})")
 
-    # Calculate SHAP values
-    print(f"Calculating SHAP values for {target_name} ({len(X_test)} samples)...", end=" ", flush=True)
+    # Calculate SHAP values. TreeExplainer does it.
     explainer = TreeExplainer(model)
     shap_values = explainer.shap_values(X_test)
-    print("✓")
 
     # Handle binary classification (use positive class SHAP values)
     if isinstance(shap_values, list) and len(shap_values) == 2:
         shap_values = shap_values[1]  # Use positive class
 
-    # Calculate mean absolute SHAP values for feature importance
     mean_shap_values = np.mean(np.abs(shap_values), axis=0)
 
     # Create feature importance DataFrame
@@ -381,39 +352,32 @@ def get_shap_feature_importance(
         "shap_importance": mean_shap_values
     }).sort_values("shap_importance", ascending=False)
 
-    print(f"\nTop {top_n} most important features for {target_name}:")
-    print(feature_importance.head(top_n).to_string(index=False))
-
-    # Return top N features
     top_features = feature_importance.head(top_n)["feature"].tolist()
     return top_features, feature_importance
 
-
-def build_omr_features(omr: pd.DataFrame) -> pd.DataFrame:
-    """Extract BMI and related features from OMR data"""
+# online medical records for BMI etc
+def build_omr_features(omr):
     if omr is None or omr.empty:
         return pd.DataFrame(columns=["subject_id"])
     
-    # Extract BMI records
     bmi_records = omr[omr["result_name"] == "BMI (kg/m2)"].copy()
     bmi_records["bmi_value"] = pd.to_numeric(bmi_records["result_value"], errors="coerce")
     
-    # Aggregate BMI per patient (use most recent or mean)
+    # Most recent
     bmi_agg = bmi_records.groupby("subject_id").agg(
         bmi=("bmi_value", "mean"),
         has_bmi=("bmi_value", "count")
     ).reset_index()
     
-    # Create BMI category features
+    # caetegorize - use general value
     bmi_agg["obesity_flag"] = (bmi_agg["bmi"] > 30).astype(int)
     bmi_agg["morbid_obesity_flag"] = (bmi_agg["bmi"] > 40).astype(int)
     bmi_agg["has_bmi"] = (bmi_agg["has_bmi"] > 0).astype(int)
     
     return bmi_agg
 
-
-def build_drg_features(drgcodes: pd.DataFrame) -> pd.DataFrame:
-    """Extract DRG severity and mortality features"""
+# drug data
+def build_drg_features(drgcodes):
     if drgcodes is None or drgcodes.empty:
         return pd.DataFrame(columns=["subject_id"])
     
@@ -432,9 +396,8 @@ def build_drg_features(drgcodes: pd.DataFrame) -> pd.DataFrame:
     
     return drg_agg
 
-
-def build_icu_features(transfers: pd.DataFrame) -> pd.DataFrame:
-    """Extract ICU stay features from transfer records"""
+# icu data like stays and transfers, outcomes
+def build_icu_features(transfers):
     if transfers is None or transfers.empty:
         return pd.DataFrame(columns=["subject_id"])
     
@@ -469,273 +432,179 @@ def build_icu_features(transfers: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='SHAP-based feature selection for two-model opioid audit system',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Use default directories (1K patients)
-  python shap_feature_selection.py
-  
-  # Process 100K patient dataset
-  python shap_feature_selection.py --input-dir ../../synthetic_data_100k/mimic-clinical-iv-demo/hosp --output-dir ../processed_data_100k --temp-dir temp_data_100k
-  
-  # Custom paths
-  python shap_feature_selection.py -i /path/to/input -o /path/to/output -t /path/to/temp
-        """
-    )
-    
-    parser.add_argument(
-        '--input-dir', '-i',
-        type=str,
-        default=os.path.join("..", "..", "synthetic_data", "1000", "mimic-iv-synthetic"),
-        help='Directory containing synthetic data files (default: ../../synthetic_data/1000/mimic-iv-synthetic)'
-    )
-    
-    parser.add_argument(
-        '--output-dir', '-o',
-        type=str,
-        default=os.path.join("..", "processed_data", "1000"),
-        help='Directory to save processed datasets (default: ../processed_data/1000)'
-    )
-    
-    parser.add_argument(
-        '--temp-dir', '-t',
-        type=str,
-        default="temp_data_1000",
-        help='Directory for intermediate files (default: temp_data_1000)'
-    )
-    
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--input-dir', '-i', type=str)
+    parser.add_argument('--output-dir', '-o', type=str)
+    parser.add_argument('--temp-dir', '-t', type=str)
+        
     args = parser.parse_args()
     
-    # Define paths from arguments
     SYNTHETIC_DATA_DIR = args.input_dir
     INTERMEDIATE_DIR = args.temp_dir
     PROCESSED_DATA_DIR = args.output_dir
     
-    # Create directories if they don't exist
+    # Create output directories, if they don't exist
     os.makedirs(INTERMEDIATE_DIR, exist_ok=True)
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-    
-    print("=" * 80)
-    print("SHAP-BASED FEATURE SELECTION FOR TWO-MODEL OPIOID AUDIT SYSTEM")
-    print("=" * 80)
-    print("Model 1: Eligibility (clinical need) | Model 2: OUD Risk (preventive)")
-    print("Audit Logic: Flag if (Eligibility=NO) OR (OUD_Risk=HIGH)")
-    print("=" * 80)
-    print(f"\nConfiguration:")
-    print(f"  Input directory: {SYNTHETIC_DATA_DIR}")
-    print(f"  Output directory: {PROCESSED_DATA_DIR}")
-    print(f"  Temp directory: {INTERMEDIATE_DIR}")
-    print()
 
-    # Load synthetic data
-    print("\n[1/7] Loading synthetic data...")
-    print("  → Reading patients.csv.gz...")
+    # Load  data nto pandas
+    print("Reading patients.csv.gz...")
     patients = read_csv("patients.csv.gz", SYNTHETIC_DATA_DIR)
-    print("  → Reading admissions.csv.gz...")
+    
+    print("Reading admissions.csv.gz...")
     admissions_raw = read_csv("admissions.csv.gz", SYNTHETIC_DATA_DIR)
-    print("  → Reading diagnoses_icd.csv.gz...")
+    
+    print("Reading diagnoses_icd.csv.gz...")
     diagnoses = read_csv("diagnoses_icd.csv.gz", SYNTHETIC_DATA_DIR)
-    print("  → Reading prescriptions.csv.gz...")
+    
+    print("Reading prescriptions.csv.gz...")
     prescriptions = read_csv("prescriptions.csv.gz", SYNTHETIC_DATA_DIR)
-    
-    # Load new feature files (if available)
-    omr = None
-    drgcodes = None
-    transfers = None
-    omr_path = os.path.join(SYNTHETIC_DATA_DIR, "omr.csv.gz")
-    drg_path = os.path.join(SYNTHETIC_DATA_DIR, "drgcodes.csv.gz")
-    transfer_path = os.path.join(SYNTHETIC_DATA_DIR, "transfers.csv.gz")
-    
-    if os.path.exists(omr_path):
-        print("  → Reading omr.csv.gz (BMI data)...")
-        omr = read_csv("omr.csv.gz", SYNTHETIC_DATA_DIR)
-    if os.path.exists(drg_path):
-        print("  → Reading drgcodes.csv.gz (DRG severity)...")
-        drgcodes = read_csv("drgcodes.csv.gz", SYNTHETIC_DATA_DIR)
-    if os.path.exists(transfer_path):
-        print("  → Reading transfers.csv.gz (ICU stays)...")
-        transfers = read_csv("transfers.csv.gz", SYNTHETIC_DATA_DIR)
-    
-    print(f"\n  ✓ Patients: {patients.shape[0]:,} records")
-    print(f"  ✓ Admissions: {admissions_raw.shape[0]:,} records")
-    print(f"  ✓ Diagnoses: {diagnoses.shape[0]:,} records")
-    print(f"  ✓ Prescriptions: {prescriptions.shape[0]:,} records")
-    if omr is not None:
-        print(f"  ✓ OMR: {omr.shape[0]:,} records (BMI data)")
-    if drgcodes is not None:
-        print(f"  ✓ DRG Codes: {drgcodes.shape[0]:,} records")
-    if transfers is not None:
-        print(f"  ✓ Transfers: {transfers.shape[0]:,} records")
 
-    # Process and engineer features
-    print("\n[2/7] Engineering features...")
-    print("  → Calculating length of stay (LOS)...")
+    print("Reading omr.csv.gz (BMI data)...")
+    omr = read_csv("omr.csv.gz", SYNTHETIC_DATA_DIR)
+
+    print("Reading drgcodes.csv.gz (DRG severity)...")
+    drgcodes = read_csv("drgcodes.csv.gz", SYNTHETIC_DATA_DIR)
+
+    print("Reading transfers.csv.gz (ICU stays)...")
+    transfers = read_csv("transfers.csv.gz", SYNTHETIC_DATA_DIR)
+    
+    print(f" Patients: {patients.shape[0]:,} records")
+    print(f"Admissions: {admissions_raw.shape[0]:,} records")
+    print(f"Diagnoses: {diagnoses.shape[0]:,} records")
+    print(f"Prescriptions: {prescriptions.shape[0]:,} records")
+    print(f"OMR: {omr.shape[0]:,} records (BMI data)")
+    print(f"DRG Codes: {drgcodes.shape[0]:,} records")
+    print(f"Transfers: {transfers.shape[0]:,} records")
+
+    # Process features
+
     admissions = compute_los_days(admissions_raw)
-    print("  → Aggregating race, insurance, utilization...")
     ri_util = aggregate_race_insurance(admissions)
-    print("  → Computing demographics and age at first admission...")
     demo = compute_age_at_first_admit(patients, admissions)
-    print("  → Building prescription features (opioids, benzos, ATC classes)...")
     rx = build_rx_features_atc(prescriptions)
-    print("  → Creating OUD labels from ICD codes...")
     y_oud = build_oud_label(diagnoses)
-    print("  → Creating eligibility labels from pain diagnoses...")
     y_eligibility = build_opioid_eligibility_label(diagnoses)
-    
-    # Build new clinical features
-    bmi_features = None
-    drg_features = None
-    icu_features = None
-    
-    if omr is not None:
-        print("  → Extracting BMI features (obesity indicators)...")
-        bmi_features = build_omr_features(omr)
-    if drgcodes is not None:
-        print("  → Extracting DRG severity features...")
-        drg_features = build_drg_features(drgcodes)
-    if transfers is not None:
-        print("  → Extracting ICU stay features...")
-        icu_features = build_icu_features(transfers)
+    bmi_features = build_omr_features(omr)
+    drg_features = build_drg_features(drgcodes)
+    icu_features = build_icu_features(transfers)
 
-    # Combine all features
-    print("  → Merging all feature tables...")
-    df = (demo.merge(ri_util, on="subject_id", how="left")
-         .merge(rx, on="subject_id", how="left")
-         .merge(y_oud, on="subject_id", how="left")
-         .merge(y_eligibility, on="subject_id", how="left"))
-    
-    # Merge new clinical features if available
-    if bmi_features is not None:
-        df = df.merge(bmi_features, on="subject_id", how="left")
-        print(f"    ✓ Added BMI features: {len(bmi_features):,} patients with BMI data")
-    if drg_features is not None:
-        df = df.merge(drg_features, on="subject_id", how="left")
-        print(f"    ✓ Added DRG features: {len(drg_features):,} patients with DRG data")
-    if icu_features is not None:
-        df = df.merge(icu_features, on="subject_id", how="left")
-        print(f"    ✓ Added ICU features: {len(icu_features):,} patients tracked")
+    # Combine all features onto a dataframe
+    df = demo.merge(ri_util, on="subject_id", how="left")
+    df = df.merge(rx, on="subject_id", how="left")
+    df = df.merge(y_oud, on="subject_id", how="left")
+    df = df.merge(y_eligibility, on="subject_id", how="left")
+    df = df.merge(bmi_features, on="subject_id", how="left")
+    df = df.merge(drg_features, on="subject_id", how="left")
+    df = df.merge(icu_features, on="subject_id", how="left")
 
     # Fill missing values
+    # strings
     df["race"] = df["race"].fillna("UNKNOWN")
     df["insurance"] = df["insurance"].fillna("UNKNOWN")
-    for col in ["n_hospital_admits", "avg_los_days", "total_los_days", "opioid_rx_count", 
-                "opioid_hadms", "distinct_opioids", "opioid_exposure_days", "any_benzo_flag", 
-                "any_opioid_flag"]:
+
+    # numerics
+    cols_to_fill = [
+        "n_hospital_admits", "avg_los_days", "total_los_days", "opioid_rx_count",
+        "opioid_hadms", "distinct_opioids", "opioid_exposure_days", "any_benzo_flag",
+        "any_opioid_flag", "bmi", "has_bmi", "obesity_flag", "morbid_obesity_flag",
+        "avg_drg_severity", "max_drg_severity", "avg_drg_mortality", "max_drg_mortality",
+        "high_severity_flag", "high_mortality_flag", "n_admissions_with_drg",
+        "n_icu_stays", "total_icu_hours", "total_icu_days", "n_icu_admissions", "has_icu_stay"
+    ]
+
+    for col in cols_to_fill:
         if col in df.columns:
             df[col] = df[col].fillna(0)
     
-    # Fill new clinical feature columns
-    for col in ["bmi", "has_bmi", "obesity_flag", "morbid_obesity_flag",
-                "avg_drg_severity", "max_drg_severity", "avg_drg_mortality", "max_drg_mortality",
-                "high_severity_flag", "high_mortality_flag", "n_admissions_with_drg",
-                "n_icu_stays", "total_icu_hours", "total_icu_days", "n_icu_admissions", "has_icu_stay"]:
-        if col in df.columns:
-            df[col] = df[col].fillna(0)
-    
+    # targets TODO to need to remove will_get_opiod_rx
     df["y_oud"] = df["y_oud"].fillna(0).astype(int)
     df["will_get_opioid_rx"] = df["any_opioid_flag"].fillna(0).astype(int)
     df["opioid_eligibility"] = df["opioid_eligibility"].fillna(0).astype(int)
 
-    print(f"\n  ✓ Total patients: {len(df):,}")
-    print(f"  ✓ Total features (before selection): {len(df.columns) - 3}")  # 3 targets: y_oud, opioid_eligibility, any_opioid_flag
-    print(f"\n  Target Statistics:")
-    print(f"    • OUD positive cases: {df['y_oud'].sum():,} ({df['y_oud'].mean()*100:.1f}%)")
-    print(f"    • Opioid eligible (has pain): {df['opioid_eligibility'].sum():,} ({df['opioid_eligibility'].mean()*100:.1f}%)")
-    print(f"    • Received opioid prescriptions: {df['any_opioid_flag'].sum():,} ({df['any_opioid_flag'].mean()*100:.1f}%)")
+    print(f"Total patients: {len(df):,}")
+    print(f"Total features (before SHP): {len(df.columns) - 3}")  # Remove targets
 
-    # Data splitting strategy
-    print("\n[3/7] Splitting data for proper ML workflow...")
-    print("  Strategy: 7% feature selection, 56% training, 7% validation, 30% test")
-    print("  → Creating final holdout test set (30%)...")
-    
-    # First split: Separate final holdout test set (30%)
+
+    print(f"OUD positive cases: {df['y_oud'].sum():,} ({df['y_oud'].mean()*100:.1f}%)")
+    print(f"Opioid eligible (has pain): {df['opioid_eligibility'].sum():,} ({df['opioid_eligibility'].mean()*100:.1f}%)")
+    print(f"Received opioid prescriptions: {df['any_opioid_flag'].sum():,} ({df['any_opioid_flag'].mean()*100:.1f}%)")
+
+    # We are splitting total data into multiple buckets
+    # 30% for main model testing
+    # 56% for main model training
+    # 7% for main model validation
+    # 7% for SHAP feature selection (only this 7% used in this file)
+
+    # Test data
     df_dev, df_test = train_test_split(
         df, test_size=0.30, random_state=42, stratify=df['y_oud']
     )
-    print("  → Extracting SHAP subset from development set (10% of dev = 7% total)...")
-    
-    # Second split: From development set, take portion for SHAP (10% of dev = 7% of total)
+
+
+    # 7% for SHAP feature selection
     df_shap, df_remaining = train_test_split(
         df_dev, test_size=0.90, random_state=42, stratify=df_dev['y_oud']
     )
-    print("  → Splitting remaining development data into train/validation...")
-    
-    # Third split: Split remaining into train and validation (90% train, 10% val from remaining)
+
+    # train and validation split    
     df_train, df_val = train_test_split(
         df_remaining, test_size=0.10, random_state=42, stratify=df_remaining['y_oud']
     )
-    
-    print(f"\n  ✓ SHAP analysis subset: {len(df_shap):,} records ({len(df_shap)/len(df)*100:.1f}%)")
-    print(f"  ✓ Model training set: {len(df_train):,} records ({len(df_train)/len(df)*100:.1f}%)")
-    print(f"  ✓ Model validation set: {len(df_val):,} records ({len(df_val)/len(df)*100:.1f}%)")
-    print(f"  ✓ Final test set: {len(df_test):,} records ({len(df_test)/len(df)*100:.1f}%)")
-
-    # Save intermediate data splits
-    print("  → Saving SHAP subset for reproducibility...")
+  
+    # Save these in temp dir
     df_shap.to_csv(os.path.join(INTERMEDIATE_DIR, "shap_subset.csv"), index=False)
-    print(f"  ✓ Saved SHAP subset to temp_data/shap_subset.csv")
 
-    # SHAP feature importance analysis
-    print("\n[4/7] Performing SHAP analysis on subset...")
-    print("  → Encoding categorical variables and preparing features...")
+    # Now real SHAP code
+    
     X, y_oud, y_rx, y_eligibility, feature_cols, label_encoders = prepare_features_for_shap(df_shap)
 
-    # Analyze OUD Risk Model (all patients - preventive approach)
-    print("\n  → Analyzing OUD Risk Model features (all patients)...")
+    # For OUD
     oud_features_all, oud_importance = get_shap_feature_importance(
         X, y_oud, "y_oud (OUD Risk - Preventive Model)", top_n=25
     )
     
-    # Analyze Eligibility Model: EXCLUDE opioid exposure features to avoid data leakage
-    # Eligibility should be based on clinical need, not opioid history
-    print("\n  → Analyzing Eligibility Model features (excluding opioid history)...")
-    print("    Rationale: Predict clinical need independent of prescription history")
+    # For Eligibility exclude opiod exposure related features. They have are too related to eligibility
+
     opioid_features = ['opioid_rx_count', 'opioid_hadms', 'distinct_opioids', 
                        'opioid_exposure_days', 'any_opioid_flag']
     X_eligibility = X[[col for col in X.columns if col not in opioid_features]]
     eligibility_feature_cols = [col for col in feature_cols if col not in opioid_features]
-    print(f"    Excluded {len(opioid_features)} opioid features, {len(X_eligibility.columns)} features remaining")
     
     eligibility_features_all, eligibility_importance = get_shap_feature_importance(
         X_eligibility, y_eligibility, "opioid_eligibility (Eligibility - Clinical Need)", top_n=25
     )
 
-    # Analyze importance distribution to find natural cutoffs
-    print("\n[5/7] Analyzing feature importance distributions...")
-    print("  → OUD Risk Model - Feature importance percentiles:")
+    # For checking to see the right percentile, where real importantnce drops off
     percentiles = [50, 75, 90, 95]
     for p in percentiles:
         val = np.percentile(oud_importance['shap_importance'], p)
         count = (oud_importance['shap_importance'] >= val).sum()
         print(f"      {p}th percentile: {val:.6f} ({count} features)")
     
-    print("  → Eligibility Model - Feature importance percentiles:")
+    print("Eligibility Model - Feature importance percentiles:")
     for p in percentiles:
         val = np.percentile(eligibility_importance['shap_importance'], p)
         count = (eligibility_importance['shap_importance'] >= val).sum()
         print(f"      {p}th percentile: {val:.6f} ({count} features)")
     
-    # Select features above 50th percentile for each target
-    print("\n  → Selecting features using 50th percentile threshold...")
+    # Select features above 50th percentile for each target (decided after looking at data)
     oud_threshold = np.percentile(oud_importance['shap_importance'], 50)
     eligibility_threshold = np.percentile(eligibility_importance['shap_importance'], 50)
     
     oud_features = oud_importance[oud_importance['shap_importance'] >= oud_threshold]['feature'].tolist()
     eligibility_features = eligibility_importance[eligibility_importance['shap_importance'] >= eligibility_threshold]['feature'].tolist()
     
-    print(f"\n  ✓ OUD Risk Model: {len(oud_features)} features selected (threshold: {oud_threshold:.6f})")
-    print(f"  ✓ Eligibility Model: {len(eligibility_features)} features selected (threshold: {eligibility_threshold:.6f})")
+    print(f"OUD Risk Model: {len(oud_features)} features selected (threshold: {oud_threshold:.6f})")
+    print(f"Eligibility Model: {len(eligibility_features)} features selected (threshold: {eligibility_threshold:.6f})")
 
     # Combine important features from both models
     all_important_features = list(set(oud_features + eligibility_features))
-    print(f"\n  ✓ Combined unique important features: {len(all_important_features)}")
-    print(f"  ✓ Feature reduction: {len(feature_cols)} → {len(all_important_features)} "
-          f"({(len(feature_cols) - len(all_important_features)) / len(feature_cols) * 100:.1f}% reduction)")
+    print(f"Combined unique important features: {len(all_important_features)}")
+
 
     # Save SHAP importance results
-    print("\n  → Saving feature importance analysis results...")
     importance_df = pd.DataFrame({
         "feature": all_important_features,
         "selected_for_oud": [f in oud_features for f in all_important_features],
@@ -749,64 +618,35 @@ Examples:
     print(f"  ✓ Saved feature importance results to temp_data/")
 
     # Prepare final datasets with selected features
-    print("\n[6/7] Creating processed datasets with selected features...")
-    print("  → Preparing final feature set...")
+
     final_features = ["subject_id"] + all_important_features + ["y_oud", "opioid_eligibility"]
     
-    print(f"  → Saving training set ({len(df_train):,} records)...", end=" ", flush=True)
     # Training set (with selected features only)
     df_train_processed = df_train[final_features].copy()
-    
-    # Fill NaN values with 0 (patients with no medications in certain ATC categories)
-    nan_before = df_train_processed.isnull().sum().sum()
-    df_train_processed = df_train_processed.fillna(0)
-    nan_after = df_train_processed.isnull().sum().sum()
-    if nan_before > 0:
-        print(f"filled {nan_before} NaN...", end=" ", flush=True)
-    
+    # Fill NaN values with 0 
+    df_train_processed = df_train_processed.fillna(0)   
     df_train_processed.to_csv(os.path.join(PROCESSED_DATA_DIR, "train_data.csv"), index=False)
-    print(f"✓ ({df_train_processed.shape[0]} × {df_train_processed.shape[1]})")
     
-    print(f"  → Saving validation set ({len(df_val):,} records)...", end=" ", flush=True)
     # Validation set (with selected features only)
     df_val_processed = df_val[final_features].copy()
-    
     # Fill NaN values with 0
-    nan_before = df_val_processed.isnull().sum().sum()
     df_val_processed = df_val_processed.fillna(0)
-    nan_after = df_val_processed.isnull().sum().sum()
-    if nan_before > 0:
-        print(f"filled {nan_before} NaN...", end=" ", flush=True)
-    
     df_val_processed.to_csv(os.path.join(PROCESSED_DATA_DIR, "validation_data.csv"), index=False)
-    print(f"✓ ({df_val_processed.shape[0]} × {df_val_processed.shape[1]})")
     
-    print(f"  → Saving test set ({len(df_test):,} records)...", end=" ", flush=True)
     # Test set (with selected features only)
     df_test_processed = df_test[final_features].copy()
-    
     # Fill NaN values with 0
-    nan_before = df_test_processed.isnull().sum().sum()
-    df_test_processed = df_test_processed.fillna(0)
-    nan_after = df_test_processed.isnull().sum().sum()
-    if nan_before > 0:
-        print(f"filled {nan_before} NaN...", end=" ", flush=True)
-    
+    df_test_processed = df_test_processed.fillna(0)   
     df_test_processed.to_csv(os.path.join(PROCESSED_DATA_DIR, "test_data.csv"), index=False)
-    print(f"✓ ({df_test_processed.shape[0]} × {df_test_processed.shape[1]})")
     
-    print(f"  → Saving full dataset ({len(df):,} records)...")
     # Full dataset with selected features (for reference)
     df_full_processed = df[final_features].copy()
     # Fill NaN values with 0
     numeric_cols = df_full_processed.select_dtypes(include=[np.number]).columns
     df_full_processed[numeric_cols] = df_full_processed[numeric_cols].fillna(0)
     df_full_processed.to_csv(os.path.join(PROCESSED_DATA_DIR, "full_data_selected_features.csv"), index=False)
-    print(f"  ✓ Saved: processed_data/full_data_selected_features.csv ({df_full_processed.shape})")
 
-    # Save metadata
-    print("\n[7/7] Saving metadata and summary...")
-    print("  → Creating metadata file...")
+    # Save stats
     metadata = {
         "description": "Two-model opioid audit system: Eligibility + OUD Risk",
         "audit_logic": "Flag if (Eligibility=NO) OR (OUD_Risk=HIGH)",
@@ -832,43 +672,6 @@ Examples:
     import json
     with open(os.path.join(PROCESSED_DATA_DIR, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=2)
-    print(f"  ✓ Saved: processed_data/metadata.json")
-
-    # Print final summary
-    print("\n" + "=" * 80)
-    print("FEATURE SELECTION COMPLETE - TWO-MODEL AUDIT SYSTEM")
-    print("=" * 80)
-    print(f"\n📊 Data Summary:")
-    print(f"  • Original features: {len(feature_cols)}")
-    print(f"  • Selected features: {len(all_important_features)}")
-    print(f"  • Feature reduction: {(len(feature_cols) - len(all_important_features)) / len(feature_cols) * 100:.1f}%")
-    print(f"\n📁 Dataset Splits:")
-    print(f"  • SHAP analysis: {len(df_shap):,} records ({len(df_shap)/len(df)*100:.1f}%)")
-    print(f"  • Training: {len(df_train):,} records ({len(df_train)/len(df)*100:.1f}%)")
-    print(f"  • Validation: {len(df_val):,} records ({len(df_val)/len(df)*100:.1f}%)")
-    print(f"  • Test: {len(df_test):,} records ({len(df_test)/len(df)*100:.1f}%)")
-    print(f"\n🎯 Target Statistics:")
-    print(f"  • OUD positive (train): {df_train['y_oud'].sum():,} ({df_train['y_oud'].mean()*100:.1f}%)")
-    print(f"  • Eligibility positive (train): {df_train['opioid_eligibility'].sum():,} ({df_train['opioid_eligibility'].mean()*100:.1f}%)")
-    print(f"\n✓ No data leakage - SHAP analysis separate from model training")
-    print(f"✓ Eligibility model excludes opioid history features")
-    print(f"\n📋 Selected Features by Model:")
-    for i, feat in enumerate(sorted(all_important_features), 1):
-        oud_mark = "✓" if feat in oud_features else " "
-        elig_mark = "✓" if feat in eligibility_features else " "
-        print(f"  {i:2d}. {feat:35s} [OUD:{oud_mark}] [Eligibility:{elig_mark}]")
-    print(f"\n📂 Output Files (processed_data/):")
-    print(f"  • train_data.csv - {df_train_processed.shape[0]:,} × {df_train_processed.shape[1]} (training)")
-    print(f"  • validation_data.csv - {df_val_processed.shape[0]:,} × {df_val_processed.shape[1]} (hyperparameter tuning)")
-    print(f"  • test_data.csv - {df_test_processed.shape[0]:,} × {df_test_processed.shape[1]} (final evaluation)")
-    print(f"  • full_data_selected_features.csv - {df_full_processed.shape[0]:,} × {df_full_processed.shape[1]} (reference)")
-    print(f"  • metadata.json (dataset info)")
-    print("\n🎯 Next Steps:")
-    print("  1. Train Eligibility Model on opioid_eligibility target")
-    print("  2. Train OUD Risk Model on y_oud target")
-    print("  3. Implement audit logic: Flag if (Eligibility=0) OR (OUD_Risk=1)")
-    print("=" * 80)
-
 
 if __name__ == "__main__":
     main()

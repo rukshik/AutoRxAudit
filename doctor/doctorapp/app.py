@@ -30,6 +30,7 @@ APP_PORT = int(os.getenv('APP_PORT', '8003'))
 PHARMACY_API_URL = os.getenv('PHARMACY_API_URL', 'http://localhost:8004')
 QKD_SERVICE_URL = os.getenv('QKD_SERVICE_URL', 'http://localhost:8005')
 ENABLE_QKD_ENCRYPTION = os.getenv('ENABLE_QKD_ENCRYPTION', 'true').lower() == 'true'
+BLOCKCHAIN_URL = os.getenv('BLOCKCHAIN_URL'. 'http://localhost:8001')
 
 app = FastAPI(title="Doctor Office")
 
@@ -40,23 +41,13 @@ templates = Jinja2Templates(directory="templates")
 def get_db():
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
-# Encryption helper
+# encrypt data using qkd key - AES encryption
 def encrypt_with_qkd_key(data: dict, qkd_key_hex: str) -> str:
-    """
-    Encrypt data using AES-256 with QKD-generated key
     
-    Args:
-        data: Dictionary to encrypt
-        qkd_key_hex: Hex-encoded 256-bit key from QKD service
-        
-    Returns:
-        Base64-encoded data
-    """
     # Convert hex key to bytes
     key_bytes = bytes.fromhex(qkd_key_hex)
     
     # Create Fernet cipher (uses AES-128 in CBC mode with HMAC)
-    # Fernet requires base64-urlsafe encoded 32-byte key
     fernet_key = base64.urlsafe_b64encode(key_bytes)
     cipher = Fernet(fernet_key)
     
@@ -187,8 +178,7 @@ async def create_prescription(
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Step 1: Initiate QKD session
-                print("Step 1: Initiating QKD session...")
+                # Initiate QKD session
                 qkd_initiate_response = await client.post(
                     f"{QKD_SERVICE_URL}/qkd/initiate",
                     json={
@@ -203,16 +193,14 @@ async def create_prescription(
                 
                 qkd_initiate_data = qkd_initiate_response.json()
                 qkd_session_id = qkd_initiate_data['session_id']
-                print(f"Session initiated: {qkd_session_id}")
                 
-                # Step 2: Complete BB84 key exchange and receive key directly
-                # In real QKD, this represents deriving the key from the quantum channel
-                print("Step 2: Running BB84 quantum key exchange (receiving key via quantum channel)...")
+                # Complete BB84 key exchange and receive key directly
+                # In real QKD,  key is derived from the quantum channel
                 qkd_exchange_response = await client.post(
                     f"{QKD_SERVICE_URL}/qkd/exchange",
                     json={
                         "session_id": qkd_session_id,
-                        "party": "sender"  # Doctor is the sender (Alice)
+                        "party": "sender" 
                     }
                 )
                 
@@ -223,20 +211,10 @@ async def create_prescription(
                 if not qkd_exchange_data['success']:
                     raise Exception(f"QKD exchange unsuccessful: {qkd_exchange_data['message']}")
                 
-                # Key is returned DIRECTLY in the exchange response (never stored in service)
                 qkd_key = qkd_exchange_data['key']
-                
-                print(f"""
-                      BB84 exchange successful - key received via quantum channel, 
-                      Error rate: {qkd_exchange_data['error_rate']:.4f}, 
-                      Secure: {qkd_exchange_data['secure']}, 
-                      Key bits: {qkd_exchange_data['final_key_bits']}
-                      """)
-                
-                # Step 3: Encrypt prescription data with quantum-safe key
-                print("Step 3: Encrypting prescription data with AES-256...")
+
+                # Encrypt prescription data with quantum-safe key
                 encrypted_payload = encrypt_with_qkd_key(prescription_data_to_send, qkd_key)
-                print(f"Data encrypted (payload size: {len(encrypted_payload)} bytes)")
                 
                 # Wipe key from local memory immediately after use
                 qkd_key = None
@@ -253,26 +231,20 @@ async def create_prescription(
                 print(f"{'='*60}\n")
                 
         except Exception as qkd_err:
-            print(f"⚠️  QKD encryption failed: {qkd_err}")
-            print(f"  Falling back to unencrypted transmission")
-            # Keep original prescription_data_to_send
+            print(f"QKD encryption failed: {qkd_err}")
     
     # Log to blockchain FIRST (before sending to pharmacy)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             blockchain_response = await client.post(
-                "http://localhost:8001/pharmacy/prescription-created",
+                f"${BLOCKCHAIN_URL}/pharmacy/prescription-created",
                 json={
                     "prescription_uuid": prescription_uuid,
                     "doctor_id": str(user_id)
                 }
             )
-            if blockchain_response.status_code == 200:
-                print(f"✓ Prescription creation logged to blockchain")
-            else:
-                print(f"Blockchain logging failed: {blockchain_response.status_code}")
     except Exception as bc_err:
-        print(f"⚠️  Blockchain logging error: {bc_err}")
+        print(f"Blockchain logging error: {bc_err}")
     
     # Send to pharmacy API
     try:
@@ -282,32 +254,21 @@ async def create_prescription(
                 json=prescription_data_to_send
             )
             
-            if pharmacy_response.status_code == 200:
-                print(f"✓ Prescription {prescription_uuid} sent to pharmacy successfully")
-                pharmacy_data = pharmacy_response.json()
-                print(f"  Pharmacy response: {pharmacy_data}")
-                    
-            else:
-                print(f"⚠️  Pharmacy API returned status {pharmacy_response.status_code}")
-                print(f"  Response: {pharmacy_response.text}")
     except httpx.ConnectError:
-        print(f"⚠️  Pharmacy API not reachable at {PHARMACY_API_URL}")
+        print(f"Pharmacy API not reachable at {PHARMACY_API_URL}")
     except Exception as e:
-        print(f"⚠️  Error calling pharmacy API: {e}")
+        print(f"Error calling pharmacy API: {e}")
     
-    # Step 5: Destroy QKD key (if QKD was used)
+    # Destroy QKD key (if QKD was used)
     if qkd_session_id:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 destroy_response = await client.delete(
                     f"{QKD_SERVICE_URL}/qkd/destroy/{qkd_session_id}"
                 )
-                if destroy_response.status_code == 200:
-                    print(f"✓ QKD keys securely destroyed for session {qkd_session_id}")
-                else:
-                    print(f"⚠️  Failed to destroy QKD keys: {destroy_response.status_code}")
+              
         except Exception as destroy_err:
-            print(f"⚠️  QKD key destruction error: {destroy_err}")
+            print(f"QKD key destruction error: {destroy_err}")
     
     # Redirect back to prescriptions list
     return RedirectResponse(url=f"/prescriptions?user_id={user_id}", status_code=303)
@@ -353,20 +314,10 @@ def prescriptions_page(request: Request, user_id: int):
         "prescriptions": prescriptions
     })
 
-
-# Pydantic model for prescription status update
-from pydantic import BaseModel
-from typing import Optional
-
-class PrescriptionStatusUpdate(BaseModel):
-    prescription_uuid: str
-    status: str
-    pharmacy_notes: Optional[str] = None
-
+# log doctor/pharamcy communication to a db a table (just for checking)
 def log_communication(conn, prescription_uuid: str, 
                      action_type: str, actor_type: str, actor_id: int, 
                      actor_name: str, comments: str, previous_status: str, new_status: str):
-    """Log communication to prescription_communications table using prescription_uuid."""
     cursor = conn.cursor()
     try:
         cursor.execute("""
@@ -386,26 +337,16 @@ def log_communication(conn, prescription_uuid: str,
 
 # API endpoint to receive prescription status update from pharmacy
 @app.post("/api/prescription-status-update")
-def update_prescription_status(update: PrescriptionStatusUpdate):
-    """
-    API endpoint for pharmacy to update prescription status.
-    Accepts JSON only.
-    
-    Request body (JSON):
-    {
-        "prescription_uuid": "uuid-string",
-        "status": "approved|denied|pending",
-        "pharmacy_notes": "optional notes"
-    }
-    """
+async def update_prescription_status(request: Request):
     conn = get_db()
     cur = conn.cursor()
     
     try:
-        print(f"[DEBUG] Updating prescription_uuid: {update.prescription_uuid}")
-        print(f"[DEBUG] New status: {update.status}")
-        print(f"[DEBUG] Pharmacy notes: {update.pharmacy_notes}")
-        
+        update = await request.json()
+        prescription_uuid = update.get('prescription_uuid')
+        status = update.get('status')
+        pharmacy_notes = update.get('pharmacy_notes')
+         
         # Update prescription status
         query = """
             UPDATE prescription_requests
@@ -417,45 +358,39 @@ def update_prescription_status(update: PrescriptionStatusUpdate):
         """
         
         # Get current status before update for communication logging
-        cur.execute("SELECT status FROM prescription_requests WHERE prescription_uuid = %s", (update.prescription_uuid,))
+        cur.execute("SELECT status FROM prescription_requests WHERE prescription_uuid = %s", (prescription_uuid,))
         current = cur.fetchone()
         previous_status = current['status'] if current else 'unknown'
         
-        cur.execute(query, (update.status, update.pharmacy_notes, update.prescription_uuid))
+        cur.execute(query, (status, pharmacy_notes, prescription_uuid))
         result = cur.fetchone()
         
-        print(f"[DEBUG] Query result: {result}")
-        print(f"[DEBUG] Result type: {type(result)}")
-        
         if not result:
-            print(f"[ERROR] Prescription {update.prescription_uuid} not found in database")
+            print(f"[ERROR] Prescription {prescription_uuid} not found in database")
             cur.close()
             conn.close()
             return JSONResponse(
                 status_code=404,
-                content={"success": False, "message": f"Prescription {update.prescription_uuid} not found"}
+                content={"success": False, "message": f"Prescription {prescription_uuid} not found"}
             )
         
         conn.commit()
         
-        # Log communication from pharmacy (when they request review or send final decision)
-        if update.status == 'pending_review' and update.pharmacy_notes:
+        # Log communication from pharmacy 
+        if status == 'pending_review' and pharmacy_notes:
             log_communication(
-                conn, update.prescription_uuid,
+                conn, prescription_uuid,
                 'PHARMACIST_REQUEST_REVIEW', 'PHARMACIST', 0,
-                "Pharmacist", update.pharmacy_notes,
-                previous_status, update.status
+                "Pharmacist", pharmacy_notes,
+                previous_status, status
             )
         
-        # Result is a RealDictRow, access by keys not indices
         result_dict = {
             "id": result['id'],
             "prescription_uuid": result['prescription_uuid'],
             "status": result['status']
         }
-        
-        print(f"[DEBUG] Successfully updated prescription: {result_dict}")
-        
+              
         cur.close()
         conn.close()
         
@@ -482,7 +417,6 @@ def update_prescription_status(update: PrescriptionStatusUpdate):
 # Prescription review detail page
 @app.get("/prescription/{prescription_id}/review", response_class=HTMLResponse)
 def prescription_review_page(request: Request, prescription_id: int, user_id: int):
-    """Display prescription review page with communication history."""
     conn = get_db()
     cur = conn.cursor()
     
@@ -525,11 +459,6 @@ def prescription_review_page(request: Request, prescription_id: int, user_id: in
         """, (prescription['prescription_uuid'],))
         communications = cur.fetchall()
         
-        # Debug output
-        print(f"\n[DEBUG] Prescription Review Page:")
-        print(f"  Prescription UUID: {prescription['prescription_uuid']}")
-        print(f"  Pharmacy Notes: {prescription.get('pharmacy_notes', 'None')}")
-        print(f"  Communications count: {len(communications)}")
         if communications:
             for i, comm in enumerate(communications):
                 print(f"  Communication {i+1}: {comm.get('action_type')} - {comm.get('comments', 'No comments')[:50]}")
@@ -555,7 +484,6 @@ def prescription_review_page(request: Request, prescription_id: int, user_id: in
 # Get prescriptions under review
 @app.get("/api/prescriptions-under-review")
 def get_prescriptions_under_review(user_id: int):
-    """Get all prescriptions that are pending review from this doctor."""
     conn = get_db()
     cur = conn.cursor()
     
@@ -623,7 +551,6 @@ async def respond_to_review(
     response_action: str = Form(...),  # 'respond' or 'cancel'
     response_comments: str = Form(None)
 ):
-    """Doctor responds to pharmacist review request or cancels prescription."""
     conn = get_db()
     cur = conn.cursor()
     
@@ -671,17 +598,16 @@ async def respond_to_review(
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     blockchain_response = await client.post(
-                        "http://localhost:8001/doctor/cancel-prescription",
+                        f"{BLOCKCHAIN_URL}/doctor/cancel-prescription",
                         json={
                             "prescription_uuid": prescription['prescription_uuid'],
                             "doctor_id": str(user_id),
                             "cancellation_reason": response_comments or "Cancelled by doctor"
                         }
                     )
-                    if blockchain_response.status_code == 200:
-                        print(f"✓ Cancellation logged to blockchain for {prescription['prescription_uuid']}")
+                    
             except Exception as bc_err:
-                print(f"⚠️  Blockchain cancellation logging error: {bc_err}")
+                print(f"Blockchain cancellation logging error: {bc_err}")
             
             # Notify pharmacy
             try:
@@ -695,7 +621,7 @@ async def respond_to_review(
                         }
                     )
             except Exception as e:
-                print(f"⚠️  Error notifying pharmacy: {e}")
+                print(f"Error notifying pharmacy: {e}")
                 
         else:  # respond
             # Update status to under_review
@@ -721,7 +647,7 @@ async def respond_to_review(
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     blockchain_response = await client.post(
-                        "http://localhost:8001/doctor/respond-to-review",
+                        f"{BLOCKCHAIN_URL}/doctor/respond-to-review",
                         json={
                             "prescription_uuid": prescription['prescription_uuid'],
                             "doctor_id": str(user_id),
@@ -729,10 +655,9 @@ async def respond_to_review(
                             "response_comments": response_comments or ""
                         }
                     )
-                    if blockchain_response.status_code == 200:
-                        print(f"✓ Doctor response logged to blockchain for {prescription['prescription_uuid']}")
+                 
             except Exception as bc_err:
-                print(f"⚠️  Blockchain response logging error: {bc_err}")
+                print(f"Blockchain response logging error: {bc_err}")
             
             # Notify pharmacy
             try:
@@ -746,7 +671,7 @@ async def respond_to_review(
                         }
                     )
             except Exception as e:
-                print(f"⚠️  Error notifying pharmacy: {e}")
+                print(f"Error notifying pharmacy: {e}")
         
         cur.close()
         conn.close()

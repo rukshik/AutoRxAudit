@@ -1,6 +1,5 @@
 """
-Blockchain Microservice for AutoRxAudit
-Handles immutable recording of flagged prescriptions and pharmacist actions
+Blockchain service for AutoRxAudit, both doctor and pharmacy app calls thi
 """
 
 from fastapi import FastAPI, HTTPException
@@ -25,11 +24,7 @@ DEPLOYER_PRIVATE_KEY = os.getenv('DEPLOYER_PRIVATE_KEY', '')
 SERVICE_PORT = int(os.getenv('BLOCKCHAIN_SERVICE_PORT', '8001'))
 
 # Initialize FastAPI
-app = FastAPI(
-    title="AutoRxAudit Blockchain Service",
-    description="Immutable audit trail for prescription flagging and pharmacist actions",
-    version="1.0.0"
-)
+app = FastAPI()
 
 # CORS
 app.add_middleware(
@@ -40,424 +35,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Contract ABI (from compiled artifacts)
-CONTRACT_ABI = [
-    {
-        "inputs": [
-            {
-                "internalType": "struct PrescriptionAuditContract.AuditInput",
-                "name": "input",
-                "type": "tuple",
-                "components": [
-                    {"internalType": "uint256", "name": "auditId", "type": "uint256"},
-                    {"internalType": "uint256", "name": "prescriptionId", "type": "uint256"},
-                    {"internalType": "string", "name": "patientId", "type": "string"},
-                    {"internalType": "string", "name": "drugName", "type": "string"},
-                    {"internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
-                    {"internalType": "uint8", "name": "eligibilityPrediction", "type": "uint8"},
-                    {"internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
-                    {"internalType": "uint8", "name": "oudRiskPrediction", "type": "uint8"},
-                    {"internalType": "bool", "name": "flagged", "type": "bool"},
-                    {"internalType": "string", "name": "flagReason", "type": "string"},
-                    {"internalType": "string", "name": "recommendation", "type": "string"}
-                ]
-            }
-        ],
-        "name": "recordAudit",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [
-            {"internalType": "uint256", "name": "auditId", "type": "uint256"},
-            {"internalType": "string", "name": "action", "type": "string"},
-            {"internalType": "string", "name": "actionReason", "type": "string"},
-            {"internalType": "string", "name": "reviewedBy", "type": "string"},
-            {"internalType": "string", "name": "reviewedByName", "type": "string"},
-            {"internalType": "string", "name": "reviewedByEmail", "type": "string"}
-        ],
-        "name": "recordPharmacistAction",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "nonpayable",
-        "type": "function"
-    },
-    {
-        "inputs": [{"internalType": "uint256", "name": "blockchainId", "type": "uint256"}],
-        "name": "getAuditRecord",
-        "outputs": [
-            {
-                "internalType": "struct PrescriptionAuditContract.PrescriptionRecord",
-                "name": "",
-                "type": "tuple",
-                "components": [
-                    {"internalType": "uint256", "name": "blockchainId", "type": "uint256"},
-                    {"internalType": "uint256", "name": "auditId", "type": "uint256"},
-                    {"internalType": "uint256", "name": "prescriptionId", "type": "uint256"},
-                    {"internalType": "string", "name": "patientId", "type": "string"},
-                    {"internalType": "string", "name": "drugName", "type": "string"},
-                    {"internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
-                    {"internalType": "uint8", "name": "eligibilityPrediction", "type": "uint8"},
-                    {"internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
-                    {"internalType": "uint8", "name": "oudRiskPrediction", "type": "uint8"},
-                    {"internalType": "bool", "name": "flagged", "type": "bool"},
-                    {"internalType": "string", "name": "flagReason", "type": "string"},
-                    {"internalType": "string", "name": "recommendation", "type": "string"},
-                    {"internalType": "uint256", "name": "auditedAt", "type": "uint256"},
-                    {"internalType": "string", "name": "reviewedBy", "type": "string"},
-                    {"internalType": "string", "name": "reviewedByName", "type": "string"},
-                    {"internalType": "string", "name": "reviewedByEmail", "type": "string"},
-                    {"internalType": "string", "name": "action", "type": "string"},
-                    {"internalType": "string", "name": "actionReason", "type": "string"},
-                    {"internalType": "uint256", "name": "reviewedAt", "type": "uint256"}
-                ]
-            }
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [{"internalType": "uint256", "name": "auditId", "type": "uint256"}],
-        "name": "getBlockchainIdByAuditId",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "recordCounter",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "prescriptionId", "type": "uint256"},
-            {"indexed": False, "name": "patientId", "type": "string"},
-            {"indexed": False, "name": "doctorId", "type": "string"},
-            {"indexed": False, "name": "pharmacyId", "type": "string"},
-            {"indexed": False, "name": "riskScore", "type": "uint8"},
-            {"indexed": False, "name": "riskFactors", "type": "string"}
-        ],
-        "name": "PrescriptionFlagged",
-        "type": "event"
-    },
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "name": "prescriptionId", "type": "uint256"},
-            {"indexed": False, "name": "overrideBy", "type": "string"},
-            {"indexed": False, "name": "overrideReason", "type": "string"},
-            {"indexed": False, "name": "timestamp", "type": "uint256"}
-        ],
-        "name": "PrescriptionOverridden",
-        "type": "event"
-    }
-]
-
 # Initialize Web3 and contract
 w3 = None
 contract = None
 account = None
 pharmacy_contract = None  # Add pharmacy contract to globals
 
+
+# intitalize blockchain
 def initialize_blockchain():
-    """Initialize blockchain connection"""
     global w3, contract, account, pharmacy_contract
-    
-    if not CONTRACT_ADDRESS:
-        print("⚠️  CONTRACT_ADDRESS not set in .env - run deployment first!")
-        return False
-    
+
     try:
         w3 = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC_URL))
-        
-        if not w3.is_connected():
-            print(f"❌ Cannot connect to blockchain at {BLOCKCHAIN_RPC_URL}")
-            return False
-        
+
+        # contract is no longer used. Onlu pharamcy contract is used    
         contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
+        pharmacy_contract = w3.eth.contract(
+                address=Web3.to_checksum_address(PHARMACY_WORKFLOW_CONTRACT_ADDRESS),
+                abi=PHARMACY_WORKFLOW_ABI
+        )
         
         if DEPLOYER_PRIVATE_KEY:
             account = Account.from_key(DEPLOYER_PRIVATE_KEY)
         else:
             # Use first account from Hardhat
             account = w3.eth.accounts[0] if w3.eth.accounts else None
-        
-        print(f"✓ Connected to blockchain at {BLOCKCHAIN_RPC_URL}")
-        print(f"✓ Contract address: {CONTRACT_ADDRESS}")
-        print(f"✓ Using account: {account if isinstance(account, str) else account.address if account else 'None'}")
-        
-        # Initialize pharmacy workflow contract if configured
-        if PHARMACY_WORKFLOW_CONTRACT_ADDRESS:
-            try:
-                pharmacy_contract = w3.eth.contract(
-                    address=Web3.to_checksum_address(PHARMACY_WORKFLOW_CONTRACT_ADDRESS),
-                    abi=PHARMACY_WORKFLOW_ABI
-                )
-                print(f"✓ Pharmacy Workflow Contract loaded at {PHARMACY_WORKFLOW_CONTRACT_ADDRESS}")
-            except Exception as e:
-                print(f"⚠️  Failed to load pharmacy workflow contract: {e}")
-        else:
-            print("⚠️  PHARMACY_WORKFLOW_CONTRACT_ADDRESS not set - pharmacy workflow disabled")
-        
+  
         return True
     except Exception as e:
-        print(f"❌ Blockchain initialization failed: {e}")
+        print(f"Blockchain initialization failed: {e}")
         return False
-
-# ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
-
-class AuditRecordRequest(BaseModel):
-    """Request to record audit result on blockchain (matches audit_logs schema)"""
-    audit_id: int
-    prescription_id: int
-    patient_id: str
-    drug_name: str
-    eligibility_score: int = Field(..., ge=0, le=100)
-    eligibility_prediction: int = Field(..., ge=0, le=1)
-    oud_risk_score: int = Field(..., ge=0, le=100)
-    oud_risk_prediction: int = Field(..., ge=0, le=1)
-    flagged: bool
-    flag_reason: str
-    recommendation: str
-
-class PharmacistActionRequest(BaseModel):
-    """Request to record pharmacist action on blockchain"""
-    audit_id: int
-    action: str  # APPROVED, DENIED, OVERRIDE_APPROVE, OVERRIDE_DENY
-    action_reason: str
-    reviewed_by: str  # user_id as string
-    reviewed_by_name: str  # reviewer's full name
-    reviewed_by_email: str  # reviewer's email
-
-class BlockchainRecordResponse(BaseModel):
-    """Response with blockchain transaction details"""
-    success: bool
-    blockchain_prescription_id: Optional[int] = None
-    transaction_hash: Optional[str] = None
-    block_number: Optional[int] = None
-    message: str
-
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
-
-@app.get("/")
-async def root():
-    """Health check"""
-    is_connected = w3 and w3.is_connected() if w3 else False
-    return {
-        "status": "healthy" if is_connected else "degraded",
-        "service": "Blockchain Service",
-        "blockchain_connected": is_connected,
-        "rpc_url": BLOCKCHAIN_RPC_URL,
-        "contract_address": CONTRACT_ADDRESS if CONTRACT_ADDRESS else "NOT_CONFIGURED"
-    }
-
-@app.post("/record-audit", response_model=BlockchainRecordResponse)
-async def record_audit(request: AuditRecordRequest):
-    """Record audit result to blockchain (called after AI model evaluation)"""
-    
-    if not w3 or not contract:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    
-    try:
-        # Build audit input tuple
-        audit_input = (
-            request.audit_id,
-            request.prescription_id,
-            request.patient_id,
-            request.drug_name,
-            request.eligibility_score,
-            request.eligibility_prediction,
-            request.oud_risk_score,
-            request.oud_risk_prediction,
-            request.flagged,
-            request.flag_reason,
-            request.recommendation
-        )
-        
-        # Build transaction
-        if isinstance(account, str):
-            # Using Hardhat account (no private key needed)
-            tx_hash = contract.functions.recordAudit(audit_input).transact({'from': account})
-        else:
-            # Using private key account
-            tx = contract.functions.recordAudit(audit_input).build_transaction({
-                'from': account.address,
-                'nonce': w3.eth.get_transaction_count(account.address),
-                'gas': 2000000,
-                'gasPrice': w3.eth.gas_price
-            })
-            
-            signed_tx = account.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-        
-        # Wait for transaction receipt
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        
-        # Get blockchain ID from contract
-        blockchain_id = contract.functions.getBlockchainIdByAuditId(request.audit_id).call()
-        
-        return {
-            "success": True,
-            "blockchain_prescription_id": blockchain_id,
-            "transaction_hash": receipt.transactionHash.hex(),
-            "block_number": receipt.blockNumber,
-            "message": f"Audit recorded on blockchain (Blockchain ID: {blockchain_id}, Audit ID: {request.audit_id})"
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Blockchain recording failed: {str(e)}")
-
-@app.post("/record-pharmacist-action", response_model=BlockchainRecordResponse)
-async def record_pharmacist_action(request: PharmacistActionRequest):
-    """Record pharmacist action to blockchain"""
-    
-    if not w3 or not contract:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    
-    try:
-        # Build transaction
-        if isinstance(account, str):
-            tx_hash = contract.functions.recordPharmacistAction(
-                request.audit_id,
-                request.action,
-                request.action_reason,
-                request.reviewed_by,
-                request.reviewed_by_name,
-                request.reviewed_by_email
-            ).transact({'from': account})
-        else:
-            tx = contract.functions.recordPharmacistAction(
-                request.audit_id,
-                request.action,
-                request.action_reason,
-                request.reviewed_by,
-                request.reviewed_by_name,
-                request.reviewed_by_email
-            ).build_transaction({
-                'from': account.address,
-                'nonce': w3.eth.get_transaction_count(account.address),
-                'gas': 2000000,
-                'gasPrice': w3.eth.gas_price
-            })
-            
-            signed_tx = account.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-        
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        
-        # Decode return value from transaction logs to get new blockchain ID
-        # The function now returns the new blockchain ID
-        logs = contract.events.PharmacistActionRecorded().process_receipt(receipt)
-        blockchain_id = logs[0]['args']['blockchainId'] if logs else None
-        
-        return {
-            "success": True,
-            "blockchain_prescription_id": blockchain_id,
-            "transaction_hash": receipt.transactionHash.hex(),
-            "block_number": receipt.blockNumber,
-            "message": f"Pharmacist action recorded on blockchain (New Record ID: {blockchain_id})"
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Blockchain recording failed: {str(e)}")
-
-@app.get("/audit-record/{blockchain_id}")
-async def get_audit_record(blockchain_id: int):
-    """Get audit record from blockchain"""
-    
-    if not w3 or not contract:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    
-    try:
-        record = contract.functions.getAuditRecord(blockchain_id).call()
-        
-        return {
-            "blockchain_id": record[0],
-            "audit_id": record[1],
-            "prescription_id": record[2],
-            "patient_id": record[3],
-            "drug_name": record[4],
-            "eligibility_score": record[5],
-            "eligibility_prediction": record[6],
-            "oud_risk_score": record[7],
-            "oud_risk_prediction": record[8],
-            "flagged": record[9],
-            "flag_reason": record[10],
-            "recommendation": record[11],
-            "audited_at": record[12],
-            "reviewed_by": record[13],
-            "reviewed_by_name": record[14],
-            "reviewed_by_email": record[15],
-            "action": record[16],
-            "action_reason": record[17],
-            "reviewed_at": record[18]
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Audit record not found: {str(e)}")
-
-@app.get("/audit-records/count")
-async def get_audit_record_count():
-    """Get total count of audit records on blockchain"""
-    
-    if not w3 or not contract:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    
-    try:
-        count = contract.functions.recordCounter().call()
-        return {"count": count}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get count: {str(e)}")
-
-@app.get("/audit-records/all")
-async def get_all_audit_records(limit: int = 50):
-    """Get all audit records from blockchain"""
-    
-    if not w3 or not contract:
-        raise HTTPException(status_code=503, detail="Blockchain not initialized")
-    
-    try:
-        count = contract.functions.recordCounter().call()
-        records = []
-        
-        # Get last N records (most recent first)
-        start = max(1, count - limit + 1)
-        for i in range(count, start - 1, -1):
-            try:
-                record = contract.functions.getAuditRecord(i).call()
-                records.append({
-                    "blockchain_id": record[0],
-                    "audit_id": record[1],
-                    "prescription_id": record[2],
-                    "patient_id": record[3],
-                    "drug_name": record[4],
-                    "eligibility_score": record[5],
-                    "oud_risk_score": record[7],
-                    "flagged": record[9],
-                    "audited_at": record[12],
-                    "reviewed_by": record[13],
-                    "reviewed_by_name": record[14],
-                    "action": record[16],
-                    "reviewed_at": record[18]
-                })
-            except:
-                continue
-        
-        return {"audit_records": records, "total_count": count}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch audit records: {str(e)}")
-
-# ============================================================================
-# PHARMACY WORKFLOW ENDPOINTS (New Contract)
-# ============================================================================
 
 # Load pharmacy workflow contract configuration
 PHARMACY_WORKFLOW_CONTRACT_ADDRESS = os.getenv('PHARMACY_WORKFLOW_CONTRACT_ADDRESS', '')
@@ -623,10 +231,12 @@ PHARMACY_WORKFLOW_ABI = [
 ]
 
 # Pydantic models for pharmacy workflow
+# Prescription created (by doctor)
 class PrescriptionCreatedRequest(BaseModel):
     prescription_uuid: str
     doctor_id: str
 
+# AI review completed
 class AIReviewRequest(BaseModel):
     prescription_uuid: str
     flagged: bool
@@ -635,34 +245,36 @@ class AIReviewRequest(BaseModel):
     flag_reason: str = ""
     recommendation: str
 
+# Pharamacist decision
 class PharmacistDecisionRequest(BaseModel):
     prescription_uuid: str
     pharmacist_id: str
-    action: str  # "APPROVED" or "DECLINED"
+    action: str  
     action_reason: str = ""
 
+# Phramacist requested review
 class PharmacistRequestsReviewRequest(BaseModel):
     prescription_uuid: str
     pharmacist_id: str
     pharmacist_name: str
     review_comments: str
 
+# Dcotors response
 class DoctorRespondsToReviewRequest(BaseModel):
     prescription_uuid: str
     doctor_id: str
     doctor_name: str
     response_comments: str
 
+# Doctor cancels
 class DoctorCancelsPrescriptionRequest(BaseModel):
     prescription_uuid: str
     doctor_id: str
     cancellation_reason: str
 
+# Log presecription created
 @app.post("/pharmacy/prescription-created")
 async def log_prescription_created(request: PrescriptionCreatedRequest):
-    """Log prescription creation to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
     
     try:
         # Build transaction
@@ -690,12 +302,9 @@ async def log_prescription_created(request: PrescriptionCreatedRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log prescription creation: {str(e)}")
 
+# AI review completed
 @app.post("/pharmacy/ai-review")
 async def log_ai_review(request: AIReviewRequest):
-    """Log AI review completion to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
-    
     try:
         # Build transaction
         tx = pharmacy_contract.functions.logAIReview(
@@ -726,11 +335,9 @@ async def log_ai_review(request: AIReviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log AI review: {str(e)}")
 
+# phamacist decision
 @app.post("/pharmacy/pharmacist-decision")
 async def log_pharmacist_decision(request: PharmacistDecisionRequest):
-    """Log pharmacist decision to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
     
     try:
         # Build transaction
@@ -760,12 +367,9 @@ async def log_pharmacist_decision(request: PharmacistDecisionRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log pharmacist decision: {str(e)}")
 
+# Pharamcist requested review
 @app.post("/pharmacy/request-review")
-async def log_pharmacist_requests_review(request: PharmacistRequestsReviewRequest):
-    """Log pharmacist requesting doctor review to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
-    
+async def log_pharmacist_requests_review(request: PharmacistRequestsReviewRequest): 
     try:
         # Build transaction
         tx = pharmacy_contract.functions.logPharmacistRequestsReview(
@@ -794,12 +398,9 @@ async def log_pharmacist_requests_review(request: PharmacistRequestsReviewReques
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log review request: {str(e)}")
 
+# Doctos response
 @app.post("/doctor/respond-to-review")
 async def log_doctor_responds_to_review(request: DoctorRespondsToReviewRequest):
-    """Log doctor response to review request to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
-    
     try:
         # Build transaction
         tx = pharmacy_contract.functions.logDoctorRespondsToReview(
@@ -828,12 +429,9 @@ async def log_doctor_responds_to_review(request: DoctorRespondsToReviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log doctor response: {str(e)}")
 
+# Doctor cancels prescription
 @app.post("/doctor/cancel-prescription")
-async def log_doctor_cancels_prescription(request: DoctorCancelsPrescriptionRequest):
-    """Log doctor prescription cancellation to blockchain"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
-    
+async def log_doctor_cancels_prescription(request: DoctorCancelsPrescriptionRequest):   
     try:
         # Build transaction
         tx = pharmacy_contract.functions.logDoctorCancelsPrescription(
@@ -861,9 +459,9 @@ async def log_doctor_cancels_prescription(request: DoctorCancelsPrescriptionRequ
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to log cancellation: {str(e)}")
 
+# Get full prescription trail
 @app.get("/pharmacy/prescription-trail/{prescription_uuid}")
 async def get_prescription_trail(prescription_uuid: str):
-    """Get complete audit trail for a prescription from blockchain events"""
     if not w3 or not pharmacy_contract:
         raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
     
@@ -981,24 +579,294 @@ async def get_prescription_trail(prescription_uuid: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch prescription trail: {str(e)}")
 
-@app.get("/pharmacy/statistics")
-async def get_pharmacy_statistics():
-    """Get pharmacy workflow contract statistics"""
-    if not w3 or not pharmacy_contract:
-        raise HTTPException(status_code=503, detail="Pharmacy workflow contract not available")
+
+#####################################################
+# old contract no longer using
+# Pedantic Models for API
+# Audit log (not using anymore)
+
+# Contract ABI 
+CONTRACT_ABI = [
+    {
+        "inputs": [
+            {
+                "internalType": "struct PrescriptionAuditContract.AuditInput",
+                "name": "input",
+                "type": "tuple",
+                "components": [
+                    {"internalType": "uint256", "name": "auditId", "type": "uint256"},
+                    {"internalType": "uint256", "name": "prescriptionId", "type": "uint256"},
+                    {"internalType": "string", "name": "patientId", "type": "string"},
+                    {"internalType": "string", "name": "drugName", "type": "string"},
+                    {"internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
+                    {"internalType": "uint8", "name": "eligibilityPrediction", "type": "uint8"},
+                    {"internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
+                    {"internalType": "uint8", "name": "oudRiskPrediction", "type": "uint8"},
+                    {"internalType": "bool", "name": "flagged", "type": "bool"},
+                    {"internalType": "string", "name": "flagReason", "type": "string"},
+                    {"internalType": "string", "name": "recommendation", "type": "string"}
+                ]
+            }
+        ],
+        "name": "recordAudit",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "auditId", "type": "uint256"},
+            {"internalType": "string", "name": "action", "type": "string"},
+            {"internalType": "string", "name": "actionReason", "type": "string"},
+            {"internalType": "string", "name": "reviewedBy", "type": "string"},
+            {"internalType": "string", "name": "reviewedByName", "type": "string"},
+            {"internalType": "string", "name": "reviewedByEmail", "type": "string"}
+        ],
+        "name": "recordPharmacistAction",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "uint256", "name": "blockchainId", "type": "uint256"}],
+        "name": "getAuditRecord",
+        "outputs": [
+            {
+                "internalType": "struct PrescriptionAuditContract.PrescriptionRecord",
+                "name": "",
+                "type": "tuple",
+                "components": [
+                    {"internalType": "uint256", "name": "blockchainId", "type": "uint256"},
+                    {"internalType": "uint256", "name": "auditId", "type": "uint256"},
+                    {"internalType": "uint256", "name": "prescriptionId", "type": "uint256"},
+                    {"internalType": "string", "name": "patientId", "type": "string"},
+                    {"internalType": "string", "name": "drugName", "type": "string"},
+                    {"internalType": "uint8", "name": "eligibilityScore", "type": "uint8"},
+                    {"internalType": "uint8", "name": "eligibilityPrediction", "type": "uint8"},
+                    {"internalType": "uint8", "name": "oudRiskScore", "type": "uint8"},
+                    {"internalType": "uint8", "name": "oudRiskPrediction", "type": "uint8"},
+                    {"internalType": "bool", "name": "flagged", "type": "bool"},
+                    {"internalType": "string", "name": "flagReason", "type": "string"},
+                    {"internalType": "string", "name": "recommendation", "type": "string"},
+                    {"internalType": "uint256", "name": "auditedAt", "type": "uint256"},
+                    {"internalType": "string", "name": "reviewedBy", "type": "string"},
+                    {"internalType": "string", "name": "reviewedByName", "type": "string"},
+                    {"internalType": "string", "name": "reviewedByEmail", "type": "string"},
+                    {"internalType": "string", "name": "action", "type": "string"},
+                    {"internalType": "string", "name": "actionReason", "type": "string"},
+                    {"internalType": "uint256", "name": "reviewedAt", "type": "uint256"}
+                ]
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "uint256", "name": "auditId", "type": "uint256"}],
+        "name": "getBlockchainIdByAuditId",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "recordCounter",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "prescriptionId", "type": "uint256"},
+            {"indexed": False, "name": "patientId", "type": "string"},
+            {"indexed": False, "name": "doctorId", "type": "string"},
+            {"indexed": False, "name": "pharmacyId", "type": "string"},
+            {"indexed": False, "name": "riskScore", "type": "uint8"},
+            {"indexed": False, "name": "riskFactors", "type": "string"}
+        ],
+        "name": "PrescriptionFlagged",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "prescriptionId", "type": "uint256"},
+            {"indexed": False, "name": "overrideBy", "type": "string"},
+            {"indexed": False, "name": "overrideReason", "type": "string"},
+            {"indexed": False, "name": "timestamp", "type": "uint256"}
+        ],
+        "name": "PrescriptionOverridden",
+        "type": "event"
+    }
+]
+
+
+class AuditRecordRequest(BaseModel):
+    audit_id: int
+    prescription_id: int
+    patient_id: str
+    drug_name: str
+    eligibility_score: int = Field(..., ge=0, le=100)
+    eligibility_prediction: int = Field(..., ge=0, le=1)
+    oud_risk_score: int = Field(..., ge=0, le=100)
+    oud_risk_prediction: int = Field(..., ge=0, le=1)
+    flagged: bool
+    flag_reason: str
+    recommendation: str
+
+# Pharmacist action
+class PharmacistActionRequest(BaseModel):
+    audit_id: int
+    action: str 
+    action_reason: str
+    reviewed_by: str 
+    reviewed_by_name: str 
+    reviewed_by_email: str  
+
+# Blockchain record response (all transactons)
+class BlockchainRecordResponse(BaseModel):
+    success: bool
+    blockchain_prescription_id: Optional[int] = None
+    transaction_hash: Optional[str] = None
+    block_number: Optional[int] = None
+    message: str
+
+# Record audit log (not using it anymore)
+@app.post("/record-audit", response_model=BlockchainRecordResponse)
+async def record_audit(request: AuditRecordRequest):
+    try:
+        # Build audit input tuple
+        audit_input = (
+            request.audit_id,
+            request.prescription_id,
+            request.patient_id,
+            request.drug_name,
+            request.eligibility_score,
+            request.eligibility_prediction,
+            request.oud_risk_score,
+            request.oud_risk_prediction,
+            request.flagged,
+            request.flag_reason,
+            request.recommendation
+        )
+        
+        # Build transaction
+        if isinstance(account, str):
+            # Using Hardhat account (no private key needed)
+            tx_hash = contract.functions.recordAudit(audit_input).transact({'from': account})
+        else:
+            # Using private key account
+            tx = contract.functions.recordAudit(audit_input).build_transaction({
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gas': 2000000,
+                'gasPrice': w3.eth.gas_price
+            })
+            
+            signed_tx = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        # Wait for transaction receipt
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        # Get blockchain ID from contract
+        blockchain_id = contract.functions.getBlockchainIdByAuditId(request.audit_id).call()
+        
+        return {
+            "success": True,
+            "blockchain_prescription_id": blockchain_id,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": f"Audit recorded on blockchain (Blockchain ID: {blockchain_id}, Audit ID: {request.audit_id})"
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Blockchain recording failed: {str(e)}")
+
+
+# get audit record (no longer using)
+@app.get("/audit-record/{blockchain_id}")
+async def get_audit_record(blockchain_id: int):
+
+    try:
+        record = contract.functions.getAuditRecord(blockchain_id).call()
+        
+        return {
+            "blockchain_id": record[0],
+            "audit_id": record[1],
+            "prescription_id": record[2],
+            "patient_id": record[3],
+            "drug_name": record[4],
+            "eligibility_score": record[5],
+            "eligibility_prediction": record[6],
+            "oud_risk_score": record[7],
+            "oud_risk_prediction": record[8],
+            "flagged": record[9],
+            "flag_reason": record[10],
+            "recommendation": record[11],
+            "audited_at": record[12],
+            "reviewed_by": record[13],
+            "reviewed_by_name": record[14],
+            "reviewed_by_email": record[15],
+            "action": record[16],
+            "action_reason": record[17],
+            "reviewed_at": record[18]
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Audit record not found: {str(e)}")
+
+# Record pharmacist action
+@app.post("/record-pharmacist-action", response_model=BlockchainRecordResponse)
+async def record_pharmacist_action(request: PharmacistActionRequest):
     
     try:
-        stats = pharmacy_contract.functions.getStatistics().call()
+        # Build transaction
+        if isinstance(account, str):
+            tx_hash = contract.functions.recordPharmacistAction(
+                request.audit_id,
+                request.action,
+                request.action_reason,
+                request.reviewed_by,
+                request.reviewed_by_name,
+                request.reviewed_by_email
+            ).transact({'from': account})
+        else:
+            tx = contract.functions.recordPharmacistAction(
+                request.audit_id,
+                request.action,
+                request.action_reason,
+                request.reviewed_by,
+                request.reviewed_by_name,
+                request.reviewed_by_email
+            ).build_transaction({
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gas': 2000000,
+                'gasPrice': w3.eth.gas_price
+            })
+            
+            signed_tx = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        #Blockchain id
+        logs = contract.events.PharmacistActionRecorded().process_receipt(receipt)
+        blockchain_id = logs[0]['args']['blockchainId'] if logs else None
+        
         return {
-            "total_prescriptions": stats[0],
-            "total_ai_reviews": stats[1],
-            "total_pharmacist_decisions": stats[2],
-            "total_review_requests": stats[3],
-            "total_doctor_responses": stats[4],
-            "total_cancellations": stats[5]
+            "success": True,
+            "blockchain_prescription_id": blockchain_id,
+            "transaction_hash": receipt.transactionHash.hex(),
+            "block_number": receipt.blockNumber,
+            "message": f"Pharmacist action recorded on blockchain (New Record ID: {blockchain_id})"
         }
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch statistics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Blockchain recording failed: {str(e)}")
+==============================
 
 # ============================================================================
 # STARTUP
@@ -1006,12 +874,8 @@ async def get_pharmacy_statistics():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize blockchain connection on startup"""
-    print("\n" + "="*60)
-    print("Starting Blockchain Microservice...")
-    print("="*60)
     initialize_blockchain()
-    print("="*60 + "\n")
+
 
 if __name__ == "__main__":
     import uvicorn
