@@ -1,39 +1,30 @@
 """
-AutoRxAudit API - Opioid Prescription Auditing System
-
-FastAPI application that:
-1. Receives prescription requests
-2. Queries PostgreSQL for patient features
-3. Runs two models (Eligibility 50K + OUD Risk 10K)
-4. Returns audit decision with explanation
+Pharmacy App
 """
 
-from fastapi import FastAPI, HTTPException, Depends, status, Request, Form
+from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, List
 import psycopg2
-from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.extras import RealDictCursor
 import torch
 import torch.nn as nn
 import numpy as np
 import os
-from datetime import datetime
-from contextlib import contextmanager
 from dotenv import load_dotenv
-from feature_calculator import FeatureCalculator
+from feature_extractor import FeatureExtractor
 import httpx
 import asyncio
 import json
 import base64
 from cryptography.fernet import Fernet
+from typing import Optional, Tuple, Any, Dict, List
 
 # Load environment variables
 load_dotenv()
 
-# Configuration
+# DB Configuration
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': os.getenv('DB_PORT', '5432'),
@@ -50,22 +41,8 @@ DOCTOR_API_URL = os.getenv('DOCTOR_API_URL', 'http://localhost:8003')
 
 # QKD service configuration
 QKD_SERVICE_URL = os.getenv('QKD_SERVICE_URL', 'http://localhost:8005')
-
-MODEL_DIR = '../../ai-layer/model'
-ELIGIBILITY_MODEL_PATH = os.path.join(MODEL_DIR, 'results/50000_v3/dnn_eligibility_model.pth')
-OUD_MODEL_PATH = os.path.join(MODEL_DIR, 'results/10000_v3/dnn_oud_risk_model.pth')
-
-# Feature lists will be loaded from model checkpoints during model loading
-# DO NOT hardcode these - they MUST match exactly what the models were trained with
-ELIGIBILITY_FEATURES = None  # Will be set by load_models()
-OUD_FEATURES = None  # Will be set by load_models()
-
 # Initialize FastAPI app
-app = FastAPI(
-    title="AutoRxAudit Pharmacy",
-    description="AI-powered opioid prescription auditing system - Pharmacy Portal",
-    version="1.0.0"
-)
+app = FastAPI()
 
 # Templates
 templates = Jinja2Templates(directory="templates")
@@ -79,147 +56,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def get_db() -> psycopg2.extensions.connection:
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
-# ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
+def db_query_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchone()
+        cursor.close()
+        return result
 
-class PrescriptionRequest(BaseModel):
-    """Prescription request from doctor - supports both encrypted and unencrypted."""
-    # For encrypted prescriptions
-    encrypted: Optional[bool] = Field(default=False, description="Whether prescription is encrypted")
-    qkd_session_id: Optional[str] = Field(default=None, description="QKD session ID for decryption")
-    ciphertext: Optional[str] = Field(default=None, description="Base64-encoded encrypted prescription data")
-    
-    # For unencrypted prescriptions (or after decryption)
-    patient_id: Optional[str] = Field(default=None, description="Patient identifier")
-    prescription_uuid: Optional[str] = Field(default=None, description="Prescription UUID from doctor system")
-    drug_name: Optional[str] = Field(default=None, description="Drug name with dosage")
-    quantity: Optional[int] = Field(default=None, description="Quantity prescribed")
-    refills: Optional[int] = Field(default=None, description="Number of refills")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "patient_id": "PAT_00001",
-                "prescription_uuid": "550e8400-e29b-41d4-a716-446655440000",
-                "drug_name": "Oxycodone 5mg",
-                "quantity": 30,
-                "refills": 0
-            }
-        }
+def db_query_all(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        return results  
 
+def db_execute(query: str, params: tuple = ()) -> Any:
+    result = None
+    with get_db() as conn:
+        cursor = conn.cursor()
+        result = cursor.execute(query, params)
+        conn.commit()
+        cursor.close()
+    return result
 
-class PrescriptionReceiptResponse(BaseModel):
-    """Immediate response when prescription is received."""
-    status: str = Field(default="success", description="Receipt status")
-    prescription_uuid: str = Field(..., description="Prescription UUID")
-    message: str = Field(default="Prescription received and queued for review", description="Status message")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "status": "success",
-                "prescription_uuid": "550e8400-e29b-41d4-a716-446655440000",
-                "message": "Prescription received and queued for review"
-            }
-        }
-
-
-class AuditResponse(BaseModel):
-    """Audit decision response."""
-    flagged: bool = Field(..., description="Whether prescription should be flagged")
-    patient_id: str
-    prescription_id: Optional[str]
-    audit_id: Optional[int] = None
-    
-    # Model predictions
-    eligibility_score: float = Field(..., description="Eligibility probability (0-1)")
-    eligibility_prediction: int = Field(..., description="1=Eligible, 0=Not Eligible")
-    oud_risk_score: float = Field(..., description="OUD risk probability (0-1)")
-    oud_risk_prediction: int = Field(..., description="1=High Risk, 0=Low Risk")
-    
-    # Explanation
-    flag_reason: str = Field(..., description="Reason for flagging")
-    recommendation: str = Field(..., description="Recommended action")
-    
-    # Metadata
-    audited_at: str
-
-
-class PatientFeaturesResponse(BaseModel):
-    """Patient feature data response."""
-    patient_id: str
-    features: Dict[str, float]
-    created_at: str
-
-
-class LoginRequest(BaseModel):
-    """User login request."""
-    email: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    """Login response."""
-    success: bool
-    user: Dict
-
-
-class AuditActionRequest(BaseModel):
-    """Pharmacist action on audit result."""
-    audit_id: int  # Required - audit log ID to update
-    action: str  # 'APPROVED', 'DENIED', 'OVERRIDE_APPROVE', 'OVERRIDE_DENY'
-    action_reason: Optional[str] = None
-
-
-class AuditActionResponse(BaseModel):
-    """Audit action response."""
-    action_id: int
-    success: bool
-    message: str
-
-
-class AuditHistoryItem(BaseModel):
-    """Audit history item."""
-    audit_id: int  # Changed from action_id to audit_id
-    patient_id: str
-    drug_name: str
-    user_email: Optional[str] = None  # Optional - None if not reviewed yet
-    user_name: Optional[str] = None  # Optional - None if not reviewed yet
-    flagged: bool
-    eligibility_score: float
-    oud_risk_score: float
-    action: Optional[str] = None  # Optional - None if not reviewed yet
-    action_reason: Optional[str] = None
-    created_at: str
-
-
-# ============================================================================
-# DATABASE CONNECTION
-# ============================================================================
-
-@contextmanager
-def get_db():
-    """Database connection context manager."""
-    conn = psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+async def get_qkd_key(session_id: str) -> Optional[str]:
     try:
-        yield conn
-    finally:
-        conn.close()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{QKD_SERVICE_URL}/qkd/exchange",
+                json={
+                    "session_id": session_id,
+                    "party": "receiver"
+                }
+            )
+            if response.status_code == 200:
+                qkd_data = response.json()
+                if qkd_data['success']:
+                    return qkd_data['key']
+                else:
+                    raise Exception(f"QKD key retrieval unsuccessful: {qkd_data['message']}")
+            else:
+                raise Exception(f"QKD key retrieval failed: {response.text}")
+    except Exception as e:
+        raise Exception(f"QKD service unavailable: {e}")
 
+# descrypt - return disctionary (aks json)
+def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> Dict[str, Any]:
 
-def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> dict:
-    """
-    Decrypt data using QKD-derived key with AES-256 (Fernet).
-    
-    Args:
-        ciphertext_b64: Base64-encoded encrypted data
-        qkd_key_hex: Hex string key from QKD service
-        
-    Returns:
-        dict: Decrypted prescription data
-    """
     # Convert hex key to bytes
     key_bytes = bytes.fromhex(qkd_key_hex)
     
@@ -238,46 +126,56 @@ def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> dict:
     
     return data
 
+# log into prescription_communications table
+def log_communication(prescription_uuid: str, action_type: str, user_type: str, user_id: int, actor_name: str, comments: str, previous_status: str, new_status: str) -> None:
 
-def decrypt_with_qkd_key(ciphertext_b64: str, qkd_key_hex: str) -> dict:
-    """
-    Decrypt prescription data using QKD-derived key.
+    prescription = db_query_one("SELECT * FROM prescription_requests WHERE prescription_uuid = %s", (prescription_uuid,))
+    if not prescription:
+        print(f"Prescription {prescription_uuid} not found for logging communication")
+        return
     
-    Args:
-        ciphertext_b64: Base64-encoded encrypted prescription data
-        qkd_key_hex: Hex-encoded encryption key from QKD service
-    
-    Returns:
-        dict: Decrypted prescription data
-    """
-    # Convert hex key to bytes
-    key_bytes = bytes.fromhex(qkd_key_hex)
-    
-    # Create Fernet cipher with base64-encoded key
-    fernet_key = base64.urlsafe_b64encode(key_bytes)
-    cipher = Fernet(fernet_key)
-    
-    # Decode base64 ciphertext
-    ciphertext = base64.b64decode(ciphertext_b64)
-    
-    # Decrypt
-    plaintext_bytes = cipher.decrypt(ciphertext)
-    
-    # Parse JSON
-    plaintext_str = plaintext_bytes.decode('utf-8')
-    data = json.loads(plaintext_str)
-    
-    return data
+    # pharamacy db id of presecription
+    prescription_id = prescription['prescription_id']
 
+    # insert into prescription_communications table
+    db_execute("""
+        INSERT INTO prescription_communications
+            (prescription_uuid, prescription_id, action_type, actor_type, 
+            actor_id, actor_name, comments, previous_status, new_status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        """, 
+        (prescription_uuid, prescription_id, action_type, user_type,
+        user_id, actor_name, comments, previous_status, new_status))
 
-# ============================================================================
-# DEEP NEURAL NETWORK MODEL
-# ============================================================================
+# send transaction to blockchain
+async def blockchain_transaction(endpoint: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(f"{BLOCKCHAIN_SERVICE_URL}{endpoint}",json=payload)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Blockchain transaction failed: {response.text}")
+                return None
+    except Exception as e:
+        print(f"Blockchain service unavailable: {e}")
+        return None
+
+# Load and run models
+
+MODEL_DIR = '../../ai-layer/model'
+ELIGIBILITY_MODEL_PATH = os.path.join(MODEL_DIR, 'results/50000_v3/dnn_eligibility_model.pth')
+OUD_MODEL_PATH = os.path.join(MODEL_DIR, 'results/10000_v3/dnn_oud_risk_model.pth')
+
+# Feature lists will be loaded from model checkpoints during model loading
+# DO NOT hardcode these - they MUST match exactly what the models were trained with
+ELIGIBILITY_FEATURES = None  # Will be set by load_models()
+OUD_FEATURES = None  # Will be set by load_models()
 
 class DeepNet(nn.Module):
     """Deep Neural Network with BatchNorm - matches training architecture."""
     
-    def __init__(self, input_dim, hidden_dims=[128, 64, 32, 16], dropout_rate=0.3):
+    def __init__(self, input_dim: int, hidden_dims: List[int] = [128, 64, 32, 16], dropout_rate: float = 0.3):
         super(DeepNet, self).__init__()
         
         layers = []
@@ -296,32 +194,22 @@ class DeepNet(nn.Module):
         
         self.network = nn.Sequential(*layers)
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
 
-
-# ============================================================================
-# MODEL LOADING
-# ============================================================================
-
-def load_models():
-    """Load trained models from checkpoints and extract feature lists."""
+# Load eligibility and OUD Risk Models from trained model checkpoints
+def load_models() -> Tuple[nn.Module, Any, nn.Module, Any]:
     global ELIGIBILITY_FEATURES, OUD_FEATURES
-    
-    print("Loading models...")
     
     # Load Eligibility model checkpoint
     eligibility_checkpoint = torch.load(ELIGIBILITY_MODEL_PATH, map_location='cpu', weights_only=False)
-    ELIGIBILITY_FEATURES = eligibility_checkpoint['feature_cols']  # Get correct feature order from checkpoint
+    ELIGIBILITY_FEATURES = eligibility_checkpoint['feature_cols'] 
     eligibility_input_dim = eligibility_checkpoint.get('input_dim', len(ELIGIBILITY_FEATURES))
     
     eligibility_model = DeepNet(input_dim=eligibility_input_dim)
     eligibility_model.load_state_dict(eligibility_checkpoint['model_state_dict'])
     eligibility_model.eval()
     eligibility_scaler = eligibility_checkpoint.get('scaler', None)
-    
-    print(f"  Eligibility model: {eligibility_input_dim} features")
-    print(f"  Features: {ELIGIBILITY_FEATURES}")
     
     # Load OUD Risk model checkpoint
     oud_checkpoint = torch.load(OUD_MODEL_PATH, map_location='cpu', weights_only=False)
@@ -333,28 +221,16 @@ def load_models():
     oud_model.eval()
     oud_scaler = oud_checkpoint.get('scaler', None)
     
-    print(f"  OUD model: {oud_input_dim} features")
-    print(f"  Features: {OUD_FEATURES}")
-    
-    print("✓ Models loaded successfully")
     return eligibility_model, eligibility_scaler, oud_model, oud_scaler
 
 
 # Global model instances
 eligibility_model, eligibility_scaler, oud_model, oud_scaler = load_models()
 
+# Check prescription with AI in background
+async def process_prescription_ai_check(prescription_id: int, patient_id: int, drug_name: str, prescription_uuid: str) -> None:
 
-# ============================================================================
-# BACKGROUND AI PROCESSING
-# ============================================================================
-
-async def process_prescription_ai_check(prescription_id: int, patient_id: str, drug_name: str, prescription_uuid: str):
-    """
-    Background task to run AI check on prescription.
-    Updates prescription_review table with results and updates prescription status.
-    """
     try:
-        print(f"Starting AI check for prescription_id={prescription_id}, uuid={prescription_uuid}")
         
         # Check if drug is an opioid
         opioid_keywords = [
@@ -366,12 +242,12 @@ async def process_prescription_ai_check(prescription_id: int, patient_id: str, d
         drug_name_lower = drug_name.lower()
         is_opioid = any(keyword in drug_name_lower for keyword in opioid_keywords)
         
-        # Initialize feature calculator
-        calculator = FeatureCalculator(DB_CONFIG)
+        # Initialize feature extractor
+        extractor = FeatureExtractor(DB_CONFIG)
         
-        # Calculate features
-        eligibility_features_dict = calculator.calculate_eligibility_features(patient_id)
-        oud_features_dict = calculator.calculate_oud_features(patient_id)
+        # Calculate features 
+        eligibility_features_dict = extractor.extract_eligibility_features(str(patient_id))
+        oud_features_dict = extractor.extract_oud_features(str(patient_id))
         
         # Prepare feature arrays
         eligibility_features = np.array([eligibility_features_dict[f] for f in ELIGIBILITY_FEATURES], dtype=np.float32).reshape(1, -1)
@@ -408,193 +284,56 @@ async def process_prescription_ai_check(prescription_id: int, patient_id: str, d
             recommendation = "AI APPROVED: Opioid prescription meets clinical criteria"
             new_status = 'AI_APPROVED'
         
-        # Save to database
-        with get_db() as conn:
-            cursor = conn.cursor()
-            
-            # Insert into prescription_review table
-            cursor.execute("""
-                INSERT INTO prescription_review (
-                    prescription_id, eligibility_score, eligibility_prediction,
-                    oud_risk_score, oud_risk_prediction,
+        db_execute("""
+            INSERT INTO prescription_review (
+                        prescription_id, eligibility_score, eligibility_prediction,
+                        oud_risk_score, oud_risk_prediction,
+                        flagged, flag_reason, recommendation
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                """, (
+                    prescription_id, eligibility_score, eligibility_pred,
+                    oud_score, oud_pred,
                     flagged, flag_reason, recommendation
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                prescription_id, eligibility_score, eligibility_pred,
-                oud_score, oud_pred,
-                flagged, flag_reason, recommendation
-            ))
-            review_id = cursor.fetchone()['id']
-            
-            # Update prescription status
-            cursor.execute("""
-                UPDATE prescription_requests
-                SET status = %s
-                WHERE prescription_id = %s
-            """, (new_status, prescription_id))
-            
-            conn.commit()
-            cursor.close()
-            
-            print(f"✓ AI check completed: prescription_id={prescription_id}, status={new_status}, review_id={review_id}")
-            
-            # Log AI review to blockchain
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    blockchain_response = await client.post(
-                        "http://localhost:8001/pharmacy/ai-review",
-                        json={
-                            "prescription_uuid": prescription_uuid,
-                            "flagged": bool(flagged),
-                            "eligibility_score": int(eligibility_score * 100),
-                            "oud_risk_score": int(oud_score * 100),
-                            "flag_reason": flag_reason,
-                            "recommendation": recommendation
-                        }
-                    )
-                    if blockchain_response.status_code == 200:
-                        print(f"✓ AI review logged to blockchain for {prescription_uuid}")
-                    else:
-                        print(f"⚠️  Blockchain AI logging failed: {blockchain_response.status_code}")
-            except Exception as bc_err:
-                print(f"⚠️  Blockchain AI logging error: {bc_err}")
+                ))
+        #update prescription status
+        db_execute("""
+            UPDATE prescription_requests
+            SET status = %s
+            WHERE prescription_id = %s
+        """, (new_status, prescription_id))
+
+
+        await blockchain_transaction(f"/pharmacy/ai-review", {
+            "prescription_uuid": prescription_uuid,
+            "flagged": bool(flagged),
+            "eligibility_score": int(eligibility_score * 100),
+            "oud_risk_score": int(oud_score * 100),
+            "flag_reason": flag_reason,
+            "recommendation": recommendation
+        })
             
     except Exception as e:
         print(f"ERROR in AI check for prescription_id={prescription_id}: {e}")
-        import traceback
-        traceback.print_exc()
         
         # Update status to AI_ERROR
-        try:
-            with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE prescription_requests
-                    SET status = 'AI_ERROR'
-                    WHERE prescription_id = %s
-                """, (prescription_id,))
-                conn.commit()
-                cursor.close()
-        except Exception as db_error:
-            print(f"ERROR updating status to AI_ERROR: {db_error}")
+        db_execute("""
+            UPDATE prescription_requests
+            SET status = 'AI_ERROR'
+            WHERE prescription_id = %s
+            """, (prescription_id,))
 
+# fetch patient features from database
+def get_patient_features(conn: psycopg2.extensions.connection, patient_id: int) -> Dict[str, Any]:
 
-# ============================================================================
-# AUTHENTICATION FUNCTIONS
-# ============================================================================
-
-# Simple session storage (in-memory - for production use Redis or database)
-active_sessions = {}
-
-
-def create_session(email: str) -> str:
-    """Create a simple session ID."""
-    import uuid
-    session_id = str(uuid.uuid4())
-    active_sessions[session_id] = email
-    return session_id
-
-
-def get_user_from_session(session_id: str) -> Optional[Dict]:
-    """Get user from session ID."""
-    email = active_sessions.get(session_id)
-    if not email:
-        return None
-    
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, email, full_name, role FROM users WHERE email = %s", (email,))
-        user = cursor.fetchone()
-        cursor.close()
-        return dict(user) if user else None
-
-
-async def get_current_user(session_id: str = Depends(lambda: None)):
-    """Get current user from session (simplified - no auth for now)."""
-    # For development: skip authentication
-    # In production, check session_id from cookie/header
-    return {"user_id": 1, "email": "test@test.com", "full_name": "Test User", "role": "doctor"}
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-async def send_audit_to_blockchain(audit_data: Dict) -> Optional[Dict]:
-    """Send audit record to blockchain service."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{BLOCKCHAIN_SERVICE_URL}/record-audit",
-                json={
-                    "audit_id": audit_data['audit_id'],
-                    "prescription_id": audit_data['prescription_id'],
-                    "patient_id": audit_data['patient_id'],
-                    "drug_name": audit_data['drug_name'],
-                    "eligibility_score": int(audit_data['eligibility_score'] * 100),
-                    "eligibility_prediction": audit_data['eligibility_prediction'],
-                    "oud_risk_score": int(audit_data['oud_risk_score'] * 100),
-                    "oud_risk_prediction": audit_data['oud_risk_prediction'],
-                    "flagged": audit_data['flagged'],
-                    "flag_reason": audit_data['flag_reason'],
-                    "recommendation": audit_data['recommendation']
-                }
-            )
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"⚠️  Blockchain recording failed: {response.text}")
-                return None
-    except Exception as e:
-        print(f"⚠️  Blockchain service unavailable: {e}")
-        return None
-
-
-async def send_pharmacist_action_to_blockchain(action_data: Dict) -> Optional[Dict]:
-    """Send pharmacist action to blockchain service."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{BLOCKCHAIN_SERVICE_URL}/record-pharmacist-action",
-                json={
-                    "audit_id": action_data['audit_id'],
-                    "action": action_data['action'],
-                    "action_reason": action_data['action_reason'],
-                    "reviewed_by": str(action_data['reviewed_by']),
-                    "reviewed_by_name": action_data['reviewed_by_name'],
-                    "reviewed_by_email": action_data['reviewed_by_email']
-                }
-            )
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"⚠️  Blockchain recording failed: {response.text}")
-                return None
-    except Exception as e:
-        print(f"⚠️  Blockchain service unavailable: {e}")
-        return None
-
-
-def get_patient_features(conn, patient_id: str) -> Dict:
-    """Fetch patient features from database."""
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT * FROM patients WHERE patient_id = %s
-    """, (patient_id,))
-    
-    patient = cursor.fetchone()
-    cursor.close()
-    
+    patient = db_query_one("SELECT * FROM patients WHERE patient_id = %s", (patient_id,))    
     if not patient:
         raise HTTPException(status_code=404, detail=f"Patient {patient_id} not found")
     
     return dict(patient)
 
-
-def prepare_features(patient_data: Dict, feature_list: List[str]) -> np.ndarray:
-    """Extract and order features for model input."""
+# prepare features for model input
+def prepare_features(patient_data: Dict[str, Any], feature_list: List[str]) -> np.ndarray:
     features = []
     for feature in feature_list:
         value = patient_data.get(feature, 0)
@@ -608,8 +347,8 @@ def prepare_features(patient_data: Dict, feature_list: List[str]) -> np.ndarray:
     
     return np.array(features, dtype=np.float32).reshape(1, -1)
 
-
-def run_inference(model, features: np.ndarray) -> tuple:
+# run inteference for the model
+def run_inference(model: nn.Module, features: np.ndarray) -> Tuple[float, int]:
     """Run model inference and return probability."""
     with torch.no_grad():
         x_tensor = torch.tensor(features, dtype=torch.float32)
@@ -620,764 +359,132 @@ def run_inference(model, features: np.ndarray) -> tuple:
     
     return prob, prediction
 
+############### APIs ###############
 
-def log_audit(conn, audit_data: Dict):
-    """Log audit decision to database."""
-    cursor = conn.cursor()
+# Login API
+@app.post("/pharmacy/login")
+def login(request: Request, email: str = Form(...), password: str = Form(...)) -> HTMLResponse:
+
+    # Simple authentication check
+    user = db_query_one("SELECT user_id, email, password, full_name, role FROM users WHERE email = %s AND is_active = TRUE", (email,))
     
-    cursor.execute("""
-        INSERT INTO audit_logs (
-            patient_id, prescription_id, flagged,
-            eligibility_score, eligibility_prediction,
-            oud_risk_score, oud_risk_prediction,
-            flag_reason, calculated_features
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-    """, (
-        audit_data['patient_id'],
-        audit_data['prescription_id'],
-        audit_data['flagged'],
-        audit_data['eligibility_score'],
-        audit_data['eligibility_prediction'],
-        audit_data['oud_risk_score'],
-        audit_data['oud_risk_prediction'],
-        audit_data['flag_reason'],
-        audit_data.get('calculated_features', '{}')
-    ))
+    if not user or user['password'] != password:
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Invalid email or password"
+        })
     
-    conn.commit()
-    cursor.close()
+    # Redirect to prescriptions list
+    return RedirectResponse(
+        url=f"/pharmacy/prescriptions?user_id={user['user_id']}",
+        status_code=303
+    )
 
 
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
+# New prescription API (from doctors app)
+@app.post("/prescription")
+async def receive_prescription(request: Request) -> Dict[str, Any]:
 
-@app.get("/api/health")
-async def health_check():
-    """API health check."""
-    return {
-        "status": "healthy",
-        "service": "AutoRxAudit Pharmacy",
-        "version": "1.0.0",
-        "models": {
-            "eligibility": "DNN 50K (16 features)",
-            "oud_risk": "DNN 10K (19 features)"
-        }
-    }
-
-
-@app.post("/prescription", response_model=PrescriptionReceiptResponse)
-async def receive_prescription(request: PrescriptionRequest):
-    """
-    Receive a prescription from doctor - supports QKD-encrypted prescriptions.
-    
-    Workflow:
-    1. If encrypted, decrypt using QKD service
-    2. Store prescription immediately with status='RECEIVED'
-    3. Return 200 OK immediately
-    4. Kick off AI check in background
-    5. Background task updates status to AI_APPROVED, AI_FLAGGED, or AI_ERROR
-    """
+    request_data = await request.json()
     
     # Handle QKD decryption if needed
-    if request.encrypted:
-        print(f"\n{'='*60}")
-        print(f"🔐 Received ENCRYPTED prescription")
-        print(f"   QKD Session: {request.qkd_session_id}")
-        print(f"{'='*60}")
+    if request_data.get('encrypted'):
+
+        # get qkd key
+        qkd_key = await get_qkd_key(request_data['qkd_session_id'])
+        if not qkd_key:
+            raise Exception("Failed to retrieve QKD key")
+                        
+        # decrypt prescription data
+        decrypted_data = decrypt_with_qkd_key(request_data['ciphertext'], qkd_key)
         
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # Call QKD service to get decryption key
-                print("Step 1: Retrieving decryption key from quantum channel...")
-                qkd_exchange_response = await client.post(
-                    f"{QKD_SERVICE_URL}/qkd/exchange",
-                    json={
-                        "session_id": request.qkd_session_id,
-                        "party": "receiver"  # Pharmacy is the receiver (Bob)
-                    }
-                )
-                
-                if qkd_exchange_response.status_code != 200:
-                    raise Exception(f"QKD key retrieval failed: {qkd_exchange_response.text}")
-                
-                qkd_data = qkd_exchange_response.json()
-                if not qkd_data['success']:
-                    raise Exception(f"QKD key retrieval unsuccessful: {qkd_data['message']}")
-                
-                qkd_key = qkd_data['key']
-                print(f"  ✓ Decryption key received via quantum channel")
-                print(f"    Error rate: {qkd_data['error_rate']:.4f}")
-                print(f"    Secure: {qkd_data['secure']}")
-                
-                # Decrypt prescription data
-                print("Step 2: Decrypting prescription with AES-256...")
-                decrypted_data = decrypt_with_qkd_key(request.ciphertext, qkd_key)
-                print(f"  ✓ Prescription decrypted successfully")
-                
-                # Wipe key from local memory immediately
-                qkd_key = None
-                del qkd_key
-                
-                # Update request object with decrypted data
-                request.patient_id = decrypted_data['patient_id']
-                request.prescription_uuid = decrypted_data['prescription_uuid']
-                request.drug_name = decrypted_data['drug_name']
-                request.quantity = decrypted_data.get('quantity')
-                request.refills = decrypted_data.get('refills')
-                
-                print(f"  Patient: {request.patient_id}")
-                print(f"  Drug: {request.drug_name}")
-                print(f"  UUID: {request.prescription_uuid}")
-                print(f"{'='*60}\n")
-                
-        except Exception as decrypt_err:
-            print(f"⚠️  Decryption failed: {decrypt_err}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=400, detail=f"Failed to decrypt prescription: {str(decrypt_err)}")
+        # Wipe key from local memory immediately
+        del qkd_key
+        
+        # Update request_data with decrypted data
+        request_data['patient_id'] = decrypted_data['patient_id']
+        request_data['prescription_uuid'] = decrypted_data['prescription_uuid']
+        request_data['drug_name'] = decrypted_data['drug_name']
+        request_data['quantity'] = decrypted_data.get('quantity')
+        request_data['refills'] = decrypted_data.get('refills')     
     else:
-        print(f"Received unencrypted prescription: uuid={request.prescription_uuid}, patient={request.patient_id}, drug={request.drug_name}")
-    
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            
-            # Insert prescription with RECEIVED status
-            cursor.execute("""
+        print(f"Received unencrypted prescription: uuid={request_data['prescription_uuid']}, patient={request_data['patient_id']}, drug={request_data['drug_name']}")
+  
+    # Insert prescription with RECEIVED status into prescription_requests table
+    db_execute("""
                 INSERT INTO prescription_requests (
                     patient_id, drug_name, prescription_uuid, 
                     quantity, refills, status
                 ) VALUES (%s, %s, %s, %s, %s, 'RECEIVED')
                 RETURNING prescription_id
-            """, (
-                request.patient_id, 
-                request.drug_name, 
-                request.prescription_uuid,
-                request.quantity,
-                request.refills
-            ))
-            
-            prescription_id = cursor.fetchone()['prescription_id']
-            conn.commit()
-            cursor.close()
-            
-            print(f"✓ Prescription stored: prescription_id={prescription_id}, status=RECEIVED")
-            
-            # Kick off AI check in background (fire and forget)
-            asyncio.create_task(
-                process_prescription_ai_check(
-                    prescription_id=prescription_id,
-                    patient_id=request.patient_id,
-                    drug_name=request.drug_name,
-                    prescription_uuid=request.prescription_uuid
-                )
-            )
-            
-            # Return immediate success response
-            return PrescriptionReceiptResponse(
-                status="success",
-                prescription_uuid=request.prescription_uuid,
-                message="Prescription received and queued for review"
-            )
-            
-    except Exception as e:
-        print(f"ERROR storing prescription: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to store prescription: {str(e)}")
+                """, 
+                (request_data['patient_id'], request_data['drug_name'], request_data['prescription_uuid'], request_data['quantity'], request_data['refills']))
 
+    # get the inserted prescription_id
 
-@app.get("/patients/{patient_id}", response_model=PatientFeaturesResponse)
-async def get_patient(patient_id: str):
-    """Get patient feature data."""
-    with get_db() as conn:
-        patient_data = get_patient_features(conn, patient_id)
-        
-        # Remove metadata fields
-        features = {k: v for k, v in patient_data.items() 
-                   if k not in ['patient_id', 'created_at', 'updated_at']}
-        
-        return PatientFeaturesResponse(
-            patient_id=patient_id,
-            features=features,
-            created_at=patient_data.get('created_at', '').isoformat() if patient_data.get('created_at') else ''
+    prescription = db_query_one("SELECT prescription_id FROM prescription_requests WHERE prescription_uuid = %s", (request_data['prescription_uuid'],))
+    prescription_id = prescription['prescription_id']
+    
+    # Kick off AI check in background (fire and forget)
+    asyncio.create_task(
+        process_prescription_ai_check(
+            prescription_id=prescription_id,
+            patient_id=request_data['patient_id'],
+            drug_name=request_data['drug_name'],
+            prescription_uuid=request_data['prescription_uuid']
         )
-
-
-@app.get("/audit-history/{patient_id}")
-async def get_audit_history(patient_id: str, limit: int = 10):
-    """Get audit history for a patient."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT * FROM audit_logs 
-            WHERE patient_id = %s 
-            ORDER BY audited_at DESC 
-            LIMIT %s
-        """, (patient_id, limit))
-        
-        history = cursor.fetchall()
-        cursor.close()
-        
-        return {
-            "patient_id": patient_id,
-            "total_audits": len(history),
-            "audits": [dict(row) for row in history]
-        }
-
-
-@app.get("/stats")
-async def get_stats():
-    """Get audit statistics."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_audits,
-                SUM(CASE WHEN flagged THEN 1 ELSE 0 END) as flagged_count,
-                AVG(eligibility_score) as avg_eligibility_score,
-                AVG(oud_risk_score) as avg_oud_risk_score
-            FROM audit_logs
-        """)
-        
-        stats = cursor.fetchone()
-        cursor.close()
-        
-        return {
-            "total_audits": stats['total_audits'] or 0,
-            "flagged_prescriptions": stats['flagged_count'] or 0,
-            "flag_rate": (stats['flagged_count'] or 0) / max(stats['total_audits'] or 1, 1),
-            "avg_eligibility_score": float(stats['avg_eligibility_score'] or 0),
-            "avg_oud_risk_score": float(stats['avg_oud_risk_score'] or 0)
-        }
-
-
-# ============================================================================
-# AUTHENTICATION ENDPOINTS
-# ============================================================================
-
-@app.post("/api/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
-    """User login endpoint - simple password matching."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT user_id, email, password, full_name, role FROM users WHERE email = %s AND is_active = TRUE",
-            (request.email,)
-        )
-        user = cursor.fetchone()
-        
-        if not user or user['password'] != request.password:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password"
-            )
-        
-        # Update last login
-        cursor.execute("UPDATE users SET last_login = NOW() WHERE user_id = %s", (user['user_id'],))
-        conn.commit()
-        cursor.close()
-        
-        # Create simple session
-        session_id = create_session(user['email'])
-        
-        return {
-            "success": True,
-            "user": {
-                "user_id": user['user_id'],
-                "email": user['email'],
-                "full_name": user['full_name'],
-                "role": user['role'],
-                "session_id": session_id
-            }
-        }
-
-
-@app.get("/api/me")
-async def get_current_user_info(current_user: dict = Depends(get_current_user)):
-    """Get current user information."""
-    return current_user
-
-
-@app.get("/api/patients")
-async def get_patients(current_user: dict = Depends(get_current_user)):
-    """Get list of patients for dropdown."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT patient_id, date_of_birth, gender
-            FROM patients
-            ORDER BY patient_id
-            LIMIT 100
-        """)
-        patients = cursor.fetchall()
-        cursor.close()
-        return [dict(p) for p in patients]
-
-
-@app.get("/api/drugs")
-async def get_drugs(current_user: dict = Depends(get_current_user)):
-    """Get list of drugs (opioids and non-opioids) for dropdown."""
+    )
+    
+    # Return immediate success response
     return {
-        "opioids": [
-            "Oxycodone 5mg",
-            "Morphine 10mg",
-            "Hydrocodone 5mg",
-            "Fentanyl 25mcg",
-            "Hydromorphone 2mg",
-            "Codeine 30mg",
-            "Tramadol 50mg"
-        ],
-        "non_opioids": [
-            "Acetaminophen 500mg",
-            "Ibuprofen 400mg",
-            "Naproxen 500mg",
-            "Aspirin 325mg",
-            "Celecoxib 200mg"
-        ]
+        "status": "success",
+        "prescription_uuid": request_data['prescription_uuid'],
+        "message": "Prescription received and queued for review"
+    }
+            
+# API for doctors reponse to review request
+@app.post("/api/prescription-status-update")
+async def update_prescription_status_from_doctor(request: Request) -> Dict[str, Any]:
+
+    request_data = await request.json()
+
+    prescription = db_query_one("SELECT * FROM prescription_requests WHERE prescription_uuid = %s", (request_data['prescription_uuid'],))
+
+    if not prescription:
+        return {
+            "success": False,
+            "message": f"Prescription {request_data['prescription_uuid']} not found in pharmacy database"
+        }
+    
+    previous_status = prescription['status']
+    
+    # Update prescription status in pharmacy database
+    db_execute("""
+                        UPDATE prescription_requests
+                        SET status = %s
+                        WHERE prescription_uuid = %s
+                        """, 
+                        (request_data['status'], request_data['prescription_uuid'])) 
+    
+    # Log to communications table
+    action_type = 'DOCTOR_CANCEL' if request_data['status'] == 'CANCELLED' else 'DOCTOR_RESPONSE'
+    log_communication(
+        request_data['prescription_uuid'],
+        action_type, 'DOCTOR', 0, 
+        "Doctor", request_data.get('pharmacy_notes', ''), 
+        previous_status, request_data['status']
+    )
+    
+    return {
+        "success": True,
+        "message": "Prescription status updated in pharmacy database",
+        "prescription_uuid": request_data['prescription_uuid'],
+        "status": request_data['status']
     }
 
 
-# ============================================================================
-# PRESCRIPTION STATUS UPDATE FROM DOCTOR
-# ============================================================================
 
-class PrescriptionStatusUpdate(BaseModel):
-    """Status update from doctor app."""
-    prescription_uuid: str
-    status: str
-    pharmacy_notes: Optional[str] = None
-
-@app.post("/api/prescription-status-update")
-async def update_prescription_status_from_doctor(update: PrescriptionStatusUpdate):
-    """
-    API endpoint for doctor app to update prescription status in pharmacy database.
-    Called when doctor responds to review or cancels prescription.
-    """
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        try:
-            print(f"[PHARMACY] Received status update from doctor:")
-            print(f"  UUID: {update.prescription_uuid}")
-            print(f"  New Status: {update.status}")
-            print(f"  Notes: {update.pharmacy_notes}")
-            
-            # Get current prescription details for previous status
-            cursor.execute("""
-                SELECT prescription_id, status FROM prescription_requests
-                WHERE prescription_uuid = %s
-            """, (update.prescription_uuid,))
-            current = cursor.fetchone()
-            
-            if not current:
-                print(f"[PHARMACY] ⚠️  Prescription {update.prescription_uuid} not found")
-                return {
-                    "success": False,
-                    "message": f"Prescription {update.prescription_uuid} not found in pharmacy database"
-                }
-            
-            previous_status = current['status']
-            
-            # Update prescription status in pharmacy database (no pharmacy_notes or updated_at columns)
-            cursor.execute("""
-                UPDATE prescription_requests
-                SET status = %s
-                WHERE prescription_uuid = %s
-                RETURNING prescription_id, prescription_uuid, status
-            """, (update.status, update.prescription_uuid))
-            
-            result = cursor.fetchone()
-            conn.commit()
-            print(f"[PHARMACY] ✓ Status updated to {result['status']}")
-            
-            # Log communication from doctor (pharmacy logs doctor communications to its own DB for display)
-            action_type = 'DOCTOR_CANCEL' if update.status == 'CANCELLED' else 'DOCTOR_RESPONSE'
-            log_communication(
-                conn, update.prescription_uuid,
-                action_type, 'DOCTOR', 0,  # doctor_id=0 since we don't have it
-                "Doctor", update.pharmacy_notes or "", 
-                previous_status, update.status
-            )
-            
-            return {
-                "success": True,
-                "message": "Prescription status updated in pharmacy database",
-                "prescription_uuid": result['prescription_uuid'],
-                "status": result['status']
-            }
-            
-        except Exception as e:
-            conn.rollback()
-            print(f"[PHARMACY] ⚠️  Error updating status: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "message": f"Error updating prescription: {str(e)}"
-            }
-        finally:
-            cursor.close()
-
-
-# ============================================================================
-# AUDIT ACTION ENDPOINTS
-# ============================================================================
-
-@app.post("/api/audit-action", response_model=AuditActionResponse)
-async def record_audit_action(
-    request: AuditActionRequest,
-    current_user: dict = Depends(get_current_user)
-):
-    """Record pharmacist decision on prescription audit (approve/deny/override)."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Update audit_logs with pharmacist decision
-        cursor.execute("""
-            UPDATE audit_logs
-            SET reviewed_by = %s,
-                action = %s,
-                action_reason = %s,
-                reviewed_at = CURRENT_TIMESTAMP
-            WHERE audit_id = %s
-            RETURNING audit_id
-        """, (
-            current_user['user_id'],
-            request.action,
-            request.action_reason,
-            request.audit_id
-        ))
-        
-        result = cursor.fetchone()
-        if not result:
-            cursor.close()
-            raise HTTPException(status_code=404, detail=f"Audit ID {request.audit_id} not found")
-        
-        audit_id = result['audit_id']
-        
-        # Update prescription status based on action
-        status_map = {
-            'APPROVED': 'APPROVED',
-            'OVERRIDE_APPROVE': 'APPROVED',
-            'DENIED': 'DENIED',
-            'OVERRIDE_DENY': 'DENIED'
-        }
-        new_status = status_map.get(request.action, 'PENDING')
-        
-        cursor.execute("""
-            UPDATE prescription_requests
-            SET status = %s
-            WHERE prescription_id = (
-                SELECT prescription_id FROM audit_logs WHERE audit_id = %s
-            )
-        """, (new_status, audit_id))
-        
-        conn.commit()
-        cursor.close()
-        
-        # Send pharmacist action to blockchain (async, non-blocking)
-        blockchain_result = await send_pharmacist_action_to_blockchain({
-            'audit_id': audit_id,
-            'action': request.action,
-            'action_reason': request.action_reason or '',
-            'reviewed_by': current_user['user_id'],
-            'reviewed_by_name': current_user.get('full_name', ''),
-            'reviewed_by_email': current_user.get('email', '')
-        })
-        
-        if blockchain_result:
-            print(f"✓ Pharmacist action recorded on blockchain: {blockchain_result.get('transaction_hash', 'N/A')}")
-        
-        return {
-            "action_id": audit_id,
-            "success": True,
-            "message": f"Pharmacist decision '{request.action}' recorded successfully"
-        }
-
-
-@app.get("/api/audit-history", response_model=List[AuditHistoryItem])
-async def get_audit_history(
-    limit: int = 50,
-    current_user: dict = Depends(get_current_user)
-):
-    """Get audit history with user actions."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                al.audit_id,
-                al.prescription_id,
-                al.patient_id,
-                al.drug_name,
-                al.eligibility_score,
-                al.eligibility_prediction,
-                al.oud_risk_score,
-                al.oud_risk_prediction,
-                al.flagged,
-                al.flag_reason,
-                al.recommendation,
-                al.audited_at,
-                al.reviewed_by,
-                al.action,
-                al.action_reason,
-                al.reviewed_at,
-                u.full_name as clinician_name,
-                u.email as clinician_email,
-                u.role as clinician_role
-            FROM audit_logs al
-            LEFT JOIN users u ON al.reviewed_by = u.user_id
-            ORDER BY al.audited_at DESC
-            LIMIT %s
-        """, (limit,))
-        
-        audits = cursor.fetchall()
-        cursor.close()
-        
-        return [
-            {
-                "audit_id": a['audit_id'],
-                "patient_id": a['patient_id'],
-                "drug_name": a['drug_name'],
-                "user_email": a['clinician_email'] if a['clinician_email'] else None,
-                "user_name": a['clinician_name'] if a['clinician_name'] else None,
-                "flagged": a['flagged'],
-                "eligibility_score": float(a['eligibility_score']),
-                "oud_risk_score": float(a['oud_risk_score']),
-                "action": a['action'] if a['action'] else None,
-                "action_reason": a['action_reason'],
-                "created_at": a['audited_at'].isoformat() if a['audited_at'] else None
-            }
-            for a in audits
-        ]
-
-
-@app.get("/api/blockchain-audits")
-async def get_blockchain_audits(limit: int = 50, current_user: dict = Depends(get_current_user)):
-    """Get all audit records from blockchain."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{BLOCKCHAIN_SERVICE_URL}/audit-records/all?limit={limit}")
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise HTTPException(status_code=503, detail="Blockchain service unavailable")
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Blockchain service not running")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch blockchain records: {str(e)}")
-
-
-@app.get("/api/blockchain-audit/{blockchain_id}")
-async def get_blockchain_audit(blockchain_id: int, current_user: dict = Depends(get_current_user)):
-    """Get specific audit record from blockchain by blockchain ID."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{BLOCKCHAIN_SERVICE_URL}/audit-record/{blockchain_id}")
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                raise HTTPException(status_code=404, detail="Blockchain record not found")
-            else:
-                raise HTTPException(status_code=503, detail="Blockchain service unavailable")
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Blockchain service not running")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch blockchain record: {str(e)}")
-
-
-# ============================================================================
-# WEB UI ROUTES
-# ============================================================================
-
-@app.get("/", response_class=HTMLResponse)
-def root(request: Request):
-    """Redirect to login page."""
-    return RedirectResponse(url="/pharmacy/login")
-
-
-@app.get("/pharmacy/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    """Pharmacy login page."""
-    return templates.TemplateResponse("login.html", {"request": request})
-
-
-@app.post("/pharmacy/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    """Pharmacy login endpoint."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT user_id, email, password, full_name, role FROM users WHERE email = %s AND is_active = TRUE",
-            (email,)
-        )
-        user = cursor.fetchone()
-        cursor.close()
-        
-        if not user or user['password'] != password:
-            return templates.TemplateResponse("login.html", {
-                "request": request,
-                "error": "Invalid email or password"
-            })
-        
-        # Redirect to prescriptions list
-        return RedirectResponse(
-            url=f"/pharmacy/prescriptions?user_id={user['user_id']}",
-            status_code=303
-        )
-
-
-@app.get("/pharmacy/prescriptions", response_class=HTMLResponse)
-def prescriptions_page(request: Request, user_id: int):
-    """Prescription queue page."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Get user info
-        cursor.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-        user = cursor.fetchone()
-        
-        if not user:
-            return RedirectResponse(url="/pharmacy/login")
-        
-        # Get prescriptions with patient names
-        cursor.execute("""
-            SELECT 
-                pr.prescription_id,
-                pr.prescription_uuid,
-                pr.patient_id,
-                p.first_name || ' ' || p.last_name as patient_name,
-                pr.drug_name,
-                pr.quantity,
-                pr.refills,
-                pr.status,
-                pr.prescribed_at
-            FROM prescription_requests pr
-            LEFT JOIN patients p ON pr.patient_id = p.patient_id
-            ORDER BY pr.prescribed_at DESC
-            LIMIT 100
-        """)
-        prescriptions = cursor.fetchall()
-        cursor.close()
-        
-        return templates.TemplateResponse("prescriptions.html", {
-            "request": request,
-            "user": user,
-            "prescriptions": prescriptions
-        })
-
-
-@app.get("/pharmacy/prescription/{prescription_id}", response_class=HTMLResponse)
-def prescription_detail_page(request: Request, prescription_id: int, user_id: int = None):
-    """Prescription detail and review page."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Get user info
-        if user_id:
-            cursor.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-            user = cursor.fetchone()
-            if not user:
-                return RedirectResponse(url="/pharmacy/login")
-        else:
-            return RedirectResponse(url="/pharmacy/login")
-        
-        # Get prescription details
-        cursor.execute("""
-            SELECT 
-                pr.*,
-                p.first_name || ' ' || p.last_name as patient_name
-            FROM prescription_requests pr
-            LEFT JOIN patients p ON pr.patient_id = p.patient_id
-            WHERE pr.prescription_id = %s
-        """, (prescription_id,))
-        prescription = cursor.fetchone()
-        
-        if not prescription:
-            cursor.close()
-            raise HTTPException(status_code=404, detail="Prescription not found")
-        
-        # Get review results if exist
-        cursor.execute("""
-            SELECT 
-                prv.*,
-                u.full_name as reviewer_name
-            FROM prescription_review prv
-            LEFT JOIN users u ON prv.reviewed_by = u.user_id
-            WHERE prv.prescription_id = %s
-        """, (prescription_id,))
-        review = cursor.fetchone()
-        
-        # Get communication history
-        cursor.execute("""
-            SELECT 
-                communication_id,
-                action_type,
-                actor_type,
-                actor_name,
-                comments,
-                previous_status,
-                new_status,
-                created_at
-            FROM prescription_communications
-            WHERE prescription_uuid = %s
-            ORDER BY created_at ASC
-        """, (prescription['prescription_uuid'],))
-        communications = cursor.fetchall()
-        
-        print(f"[DEBUG] Found {len(communications)} communications for UUID {prescription['prescription_uuid']}")
-        for comm in communications:
-            print(f"  - {comm['actor_type']}: {comm['action_type']} - {comm['comments'][:50] if comm['comments'] else 'No comments'}")
-        
-        cursor.close()
-        
-        # Determine if prescription can be edited
-        # Can edit if status is AI_APPROVED, AI_FLAGGED, AI_ERROR, or UNDER_REVIEW (after doctor responds)
-        can_edit = prescription['status'] in ['AI_APPROVED', 'AI_FLAGGED', 'AI_ERROR', 'UNDER_REVIEW']
-        
-        return templates.TemplateResponse("prescription_detail.html", {
-            "request": request,
-            "user": user,
-            "prescription": prescription,
-            "review": review,
-            "communications": communications,
-            "can_edit": can_edit
-        })
-
-
-def log_communication(conn, prescription_uuid: str, 
-                     action_type: str, actor_type: str, actor_id: int, 
-                     actor_name: str, comments: str, previous_status: str, new_status: str):
-    """Log communication to prescription_communications table using prescription_uuid."""
-    cursor = conn.cursor()
-    try:
-        # Look up the local prescription_id from prescription_uuid (pharmacy DB has this FK)
-        cursor.execute("""
-            SELECT prescription_id FROM prescription_requests WHERE prescription_uuid = %s
-        """, (prescription_uuid,))
-        result = cursor.fetchone()
-        prescription_id = result['prescription_id'] if result else None
-        
-        cursor.execute("""
-            INSERT INTO prescription_communications 
-            (prescription_uuid, prescription_id, action_type, actor_type, 
-             actor_id, actor_name, comments, previous_status, new_status, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-        """, (prescription_uuid, prescription_id, action_type, actor_type, 
-              actor_id, actor_name, comments, previous_status, new_status))
-        conn.commit()
-        print(f"✓ Communication logged: {action_type} by {actor_name}")
-    except Exception as e:
-        print(f"⚠️  Failed to log communication: {e}")
-        conn.rollback()
-    finally:
-        cursor.close()
-
-
+# api for pharmacist to take action on prescription
 @app.post("/pharmacy/prescription/{prescription_id}/action")
 async def take_action(
     request: Request,
@@ -1385,192 +492,215 @@ async def take_action(
     user_id: int = Form(...),
     action: str = Form(...),
     action_reason: str = Form(None)
-):
-    """Pharmacist takes action on prescription."""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Get prescription details
-        cursor.execute(
-            "SELECT * FROM prescription_requests WHERE prescription_id = %s",
-            (prescription_id,)
-        )
-        prescription = cursor.fetchone()
-        
-        if not prescription:
-            cursor.close()
-            raise HTTPException(status_code=404, detail="Prescription not found")
-        
-        # Get pharmacist details
-        cursor.execute(
-            "SELECT user_id, full_name FROM users WHERE user_id = %s",
-            (user_id,)
-        )
-        pharmacist = cursor.fetchone()
-        pharmacist_name = pharmacist['full_name'] if pharmacist else f"Pharmacist {user_id}"
-        
-        previous_status = prescription['status']
-        
-        # Handle REQUEST_REVIEW action differently
-        if action == 'REQUEST_REVIEW':
+) -> RedirectResponse:
+    
+    prescription = db_query_one("SELECT * FROM prescription_requests WHERE prescription_id = %s", (prescription_id,))
+    
+    if not prescription:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+    
+    # Get pharmacist details
+
+    pharmacist = db_query_one("SELECT user_id, full_name FROM users WHERE user_id = %s", (user_id,))
+
+    pharmacist_name = pharmacist['full_name'] if pharmacist else f"Pharmacist {user_id}"
+    
+    previous_status = prescription['status']
+
+    match action:
+        case 'APPROVED':
+            new_status = 'APPROVED'
+            doctor_app_status = 'pharmacy_approved'
+            blockchain_svc_endpoint = "/pharmacy/pharmacist-decision"
+            blockchain_request_payload = {
+                "prescription_uuid": prescription['prescription_uuid'],
+                "pharmacist_id": str(user_id),
+                "action": action,
+                "action_reason": action_reason or ""
+            }
+
+        case 'DECLINED':
+            new_status = 'DECLINED'
+            doctor_app_status = 'pharmacy_denied'
+            blockchain_svc_endpoint = "/pharmacy/pharmacist-decision"
+            blockchain_request_payload = {
+                "prescription_uuid": prescription['prescription_uuid'],
+                "pharmacist_id": str(user_id),
+                "action": action,
+                "action_reason": action_reason or ""
+            }
+
+        case 'REQUEST_REVIEW':
             new_status = 'PENDING_REVIEW'
-            
-            # Update prescription status
-            cursor.execute("""
-                UPDATE prescription_requests
-                SET status = %s
-                WHERE prescription_id = %s
-            """, (new_status, prescription_id))
-            
-            conn.commit()
-            
-            # Log communication
-            log_communication(
-                conn, prescription['prescription_uuid'],
-                'PHARMACIST_REQUEST_REVIEW', 'PHARMACIST', user_id, 
-                pharmacist_name, action_reason or "", previous_status, new_status
-            )
-            
-            # Log to blockchain
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    blockchain_response = await client.post(
-                        f"{BLOCKCHAIN_SERVICE_URL}/pharmacy/request-review",
-                        json={
-                            "prescription_uuid": prescription['prescription_uuid'],
-                            "pharmacist_id": str(user_id),
-                            "pharmacist_name": pharmacist_name,
-                            "review_comments": action_reason or ""
-                        }
-                    )
-                    if blockchain_response.status_code == 200:
-                        print(f"✓ Review request logged to blockchain for {prescription['prescription_uuid']}")
-                    else:
-                        print(f"⚠️  Blockchain review request logging failed: {blockchain_response.status_code}")
-            except Exception as bc_err:
-                print(f"⚠️  Blockchain review request logging error: {bc_err}")
-            
-            # Call doctor API to update status
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    payload = {
-                        "prescription_uuid": prescription['prescription_uuid'],
-                        "status": "pending_review",
-                        "pharmacy_notes": action_reason or ""
-                    }
-                    doctor_response = await client.post(
-                        f"{DOCTOR_API_URL}/api/prescription-status-update",
-                        json=payload
-                    )
-                    if doctor_response.status_code == 200:
-                        print(f"✓ Doctor system notified of review request for {prescription['prescription_uuid']}")
-                    else:
-                        print(f"⚠️  Doctor API returned status {doctor_response.status_code}")
-            except Exception as e:
-                print(f"⚠️  Error calling doctor API: {e}")
-            
-            cursor.close()
-            return RedirectResponse(
-                url=f"/pharmacy/prescriptions?user_id={user_id}",
-                status_code=303
-            )
-        
-        # Handle APPROVE/DECLINE actions
-        # Update prescription_review with pharmacist action
-        cursor.execute("""
+            doctor_app_status = 'pending_review'
+            blockchain_svc_endpoint = "/pharmacy/request-review"
+            blockchain_request_payload = {
+                "prescription_uuid": prescription['prescription_uuid'],
+                "pharmacist_id": str(user_id),
+                "pharmacist_name": pharmacist_name,
+                "review_comments": action_reason or ""
+            }
+
+    # For approved or denied prescriptions, update in review table
+    if action in ['APPROVED', 'DECLINED']:
+        # Update prescription_review table
+        db_execute("""
             UPDATE prescription_review
             SET reviewed_by = %s,
                 action = %s,
                 action_reason = %s,
                 reviewed_at = CURRENT_TIMESTAMP
             WHERE prescription_id = %s
-            RETURNING id
-        """, (user_id, action, action_reason, prescription_id))
-        
-        result = cursor.fetchone()
-        if not result:
-            cursor.close()
-            raise HTTPException(status_code=404, detail="Review record not found")
-        
-        # Update prescription status
-        cursor.execute("""
-            UPDATE prescription_requests
-            SET status = %s
-            WHERE prescription_id = %s
-        """, (action, prescription_id))
-        
-        conn.commit()
-        
-        # Log communication for approve/decline
-        action_type = 'PHARMACIST_APPROVE' if action == 'APPROVED' else 'PHARMACIST_DENY'
-        log_communication(
-            conn, prescription['prescription_uuid'],
-            action_type, 'PHARMACIST', user_id, 
-            pharmacist_name, action_reason or "", previous_status, action
-        )
-        
-        cursor.close()
-        
-        # Call doctor API to update status
+        """, 
+        (user_id, action, action_reason, prescription_id))
+
+    # update status in prescription_requests table
+    db_execute("UPDATE prescription_requests SET status = %s WHERE prescription_id = %s", (new_status, prescription_id))
+
+    # insert into prescription communications table
+    log_communication(prescription['prescription_uuid'], 'PHARMACIST_ACTION', 'PHARMACIST', user_id, pharmacist_name, action_reason or "", previous_status, new_status)
+
+    # send to blockchain service
+    await blockchain_transaction(blockchain_svc_endpoint, blockchain_request_payload)
+
+    # update doctors system via API
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        payload = {
+            "prescription_uuid": prescription['prescription_uuid'],
+            "status": doctor_app_status,
+            "pharmacy_notes": action_reason or ""
+        }
         try:
-            print(f"[DEBUG] Received action from form: '{action}' (type: {type(action).__name__})")
-            
-            # Map pharmacy action to doctor system status
-            if action == 'APPROVED':
-                api_action = "pharmacy_approved"
-            elif action == 'DECLINED':
-                api_action = "pharmacy_denied"
+            doctor_response = await client.post(
+                f"{DOCTOR_API_URL}/api/prescription-status-update",
+                json=payload
+            )
+            if doctor_response.status_code == 200:
+                print(f"Doctor system updated for prescription {prescription['prescription_uuid']}")
             else:
-                api_action = action.lower()
-            
-            print(f"[DEBUG] Mapped to api_action: '{api_action}'")
-            print(f"[DEBUG] Sending to doctor API - UUID: {prescription['prescription_uuid']}, Status: {api_action}, Notes: {action_reason}")
-
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                payload = {
-                    "prescription_uuid": prescription['prescription_uuid'],
-                    "status": api_action,
-                    "pharmacy_notes": action_reason
-                }
-                print(f"[DEBUG] Full payload: {payload}")
-                
-                doctor_response = await client.post(
-                    f"{DOCTOR_API_URL}/api/prescription-status-update",
-                    json=payload
-                )
-                
-                if doctor_response.status_code == 200:
-                    print(f"✓ Doctor system updated for prescription {prescription['prescription_uuid']}")
-                else:
-                    print(f"⚠️  Doctor API returned status {doctor_response.status_code}")
+                print(f"Doctor API returned status {doctor_response.status_code}")
         except Exception as e:
-            print(f"⚠️  Error calling doctor API: {e}")
-        
-        # Log pharmacist decision to blockchain
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                blockchain_response = await client.post(
-                    "http://localhost:8001/pharmacy/pharmacist-decision",
-                    json={
-                        "prescription_uuid": prescription['prescription_uuid'],
-                        "pharmacist_id": str(user_id),
-                        "action": action,
-                        "action_reason": action_reason or ""
-                    }
-                )
-                if blockchain_response.status_code == 200:
-                    print(f"✓ Pharmacist decision logged to blockchain for {prescription['prescription_uuid']}")
-                else:
-                    print(f"⚠️  Blockchain pharmacist logging failed: {blockchain_response.status_code}")
-        except Exception as bc_err:
-            print(f"⚠️  Blockchain pharmacist logging error: {bc_err}")
-        
-        # Redirect back to prescriptions list
-        return RedirectResponse(
-            url=f"/pharmacy/prescriptions?user_id={user_id}",
-            status_code=303
-        )
+            print(f"Error calling doctor API: {e}")
+    
+    return RedirectResponse(url=f"/pharmacy/prescriptions?user_id={user_id}",status_code=303)
 
+############### PAGES ###############
+
+# root page redirects to login
+@app.get("/", response_class=HTMLResponse)
+def root(request: Request) -> RedirectResponse:
+    """Redirect to login page."""
+    return RedirectResponse(url="/pharmacy/login")
+
+
+# login page
+@app.get("/pharmacy/login", response_class=HTMLResponse)
+def login_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("login.html", {"request": request})
+
+# prescriptions list page 
+@app.get("/pharmacy/prescriptions", response_class=HTMLResponse)
+def prescriptions_page(request: Request, user_id: Optional[int] = None) -> HTMLResponse:
+    
+    # check if user logged in
+    if not user_id:
+        return RedirectResponse(url="/pharmacy/login")
+    
+    user = db_query_one("SELECT * FROM users WHERE user_id = %s", (user_id,))
+    if not user:
+        return RedirectResponse(url="/pharmacy/login")
+
+    prescriptions = db_query_all("""
+                                SELECT 
+                                    pr.prescription_id,
+                                    pr.prescription_uuid,
+                                    pr.patient_id,
+                                    p.first_name || ' ' || p.last_name as patient_name,
+                                    pr.drug_name,
+                                    pr.quantity,
+                                    pr.refills,
+                                    pr.status,
+                                    pr.prescribed_at
+                                FROM prescription_requests pr
+                                LEFT JOIN patients p ON pr.patient_id = p.patient_id
+                                ORDER BY pr.prescribed_at DESC
+                                LIMIT 100
+                            """)
+
+    return templates.TemplateResponse("prescriptions.html", {
+        "request": request,
+        "user": user,
+        "prescriptions": prescriptions
+    })
+
+# prescription detail and review page
+@app.get("/pharmacy/prescription/{prescription_id}", response_class=HTMLResponse)
+def prescription_detail_page(request: Request, prescription_id: int, user_id: Optional[int] = None) -> HTMLResponse:
+
+    # check if user logged in
+    if not user_id:
+        return RedirectResponse(url="/pharmacy/login")
+    
+    user = db_query_one("SELECT * FROM users WHERE user_id = %s", (user_id,))
+
+    if not user:
+        return RedirectResponse(url="/pharmacy/login")
+
+    # Get prescription details
+    prescription = db_query_one("""
+                                SELECT 
+                                    pr.*,
+                                    p.first_name || ' ' || p.last_name as patient_name
+                                FROM prescription_requests pr
+                                LEFT JOIN patients p ON pr.patient_id = p.patient_id
+                                WHERE pr.prescription_id = %s
+                                """,
+                                (prescription_id,))
+                                       
+    if not prescription:
+        raise HTTPException(status_code=404, detail="Prescription not found")
+     
+    # Get review results if exist
+    review = db_query_one("""
+                        SELECT 
+                            prv.*,
+                            u.full_name as reviewer_name
+                        FROM prescription_review prv
+                        LEFT JOIN users u ON prv.reviewed_by = u.user_id
+                        WHERE prv.prescription_id = %s
+                        """, 
+                        (prescription_id,))
+       
+    # Get communication history
+
+    communications = db_query_all("""
+                                    SELECT 
+                                        communication_id,
+                                        action_type,
+                                        actor_type,
+                                        actor_name,
+                                        comments,
+                                        previous_status,
+                                        new_status,
+                                        created_at
+                                    FROM prescription_communications
+                                    WHERE prescription_uuid = %s
+                                    ORDER BY created_at ASC
+                                """, 
+                                (prescription['prescription_uuid'],))
+    
+    # Determine if prescription can be edited
+    # Can edit if status is AI_APPROVED, AI_FLAGGED, AI_ERROR, or UNDER_REVIEW (after doctor responds)
+    can_edit = prescription['status'] in ['AI_APPROVED', 'AI_FLAGGED', 'AI_ERROR', 'UNDER_REVIEW']
+    
+    return templates.TemplateResponse("prescription_detail.html", {
+        "request": request,
+        "user": user,
+        "prescription": prescription,
+        "review": review,
+        "communications": communications,
+        "can_edit": can_edit
+    })
 
 if __name__ == "__main__":
     import uvicorn

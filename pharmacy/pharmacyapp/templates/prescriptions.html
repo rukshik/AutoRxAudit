@@ -101,7 +101,7 @@
             {% set action_needed = prescriptions|selectattr('status', 'in', ['RECEIVED', 'AI_APPROVED', 'AI_FLAGGED', 'AI_ERROR', 'UNDER_REVIEW'])|list %}
             {% if action_needed|length > 0 %}
             <div class="prescriptions-card mb-3" style="border-left: 4px solid #ffc107; background: #fff9e6;">
-                <h2 style="color: #ff9800;">⚠️ Prescriptions Requiring Action ({{ action_needed|length }})</h2>
+                <h2 style="color: #ff9800;">Prescriptions Requiring Action ({{ action_needed|length }})</h2>
                 <div class="table-responsive">
                     <table class="table table-hover">
                         <thead class="table-light">

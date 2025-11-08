@@ -7,6 +7,7 @@ async function main() {
   // Get deployer account
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying with account:", deployer.address);
+  console.log("Deployer private key:", deployer.privateKey);
 
   // Deploy contract
   const PharmacyWorkflowAudit = await hre.ethers.getContractFactory("PharmacyWorkflowAudit");
@@ -15,9 +16,12 @@ async function main() {
 
   const contractAddress = await contract.getAddress();
   console.log("✓ PharmacyWorkflowAudit deployed to:", contractAddress);
+  console.log("PHARMACY_WORKFLOW_CONTRACT_ADDRESS:", contractAddress);
+  console.log("Deployer private key:", deployer.privateKey);
 
   // Save deployment info
   console.log("\n===========================================");
+  console.log("Hardhat Runtime Environment (hre):", hre);
   console.log("Add this to blockchain-layer/.env file:");
   console.log("===========================================");
   console.log(`PHARMACY_WORKFLOW_CONTRACT_ADDRESS=${contractAddress}`);

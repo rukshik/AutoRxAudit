@@ -50,9 +50,9 @@ active_sessions: Dict[str, Dict] = {}
 
 # Pydantic models
 class QKDInitiateRequest(BaseModel):
-    sender: str  # e.g., "doctor-office-1"
-    receiver: str  # e.g., "pharmacy-A"
-    prescription_uuid: str
+    sender: str  
+    receiver: str 
+    session_key: str
 
 
 class QKDInitiateResponse(BaseModel):
@@ -87,7 +87,7 @@ class QKDSessionStatus(BaseModel):
     status: str
     sender: str
     receiver: str
-    prescription_uuid: str
+    session_key: str
     created_at: str
     expires_at: str
     key_established: bool
@@ -150,7 +150,7 @@ async def initiate_qkd_session(request: QKDInitiateRequest):
         'session_id': session_id,
         'sender': request.sender,
         'receiver': request.receiver,
-        'prescription_uuid': request.prescription_uuid,
+        'session_key': request.session_key,
         'status': 'initiated',
         'created_at': created_at.isoformat(),
         'expires_at': expires_at.isoformat(),
@@ -276,7 +276,7 @@ async def get_session_status(session_id: str):
         status=session['status'],
         sender=session['sender'],
         receiver=session['receiver'],
-        prescription_uuid=session['prescription_uuid'],
+        session_key=session['session_key'],
         created_at=session['created_at'],
         expires_at=session['expires_at'],
         key_established=session['key_established'],

@@ -428,7 +428,7 @@
                             <label class="form-label fw-bold">Decision:</label>
                             <div>
                                 <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="action" id="approve" value="APPROVED" required>
+                                    <input class="form-check-input" type="radio" name="action" id="approve" value="APPROVED" required {% if prescription.status == 'AI_APPROVED' %}checked{% endif %}>
                                     <label class="form-check-label" for="approve">Approve</label>
                                 </div>
                                 <div class="form-check form-check-inline">
@@ -436,7 +436,7 @@
                                     <label class="form-check-label" for="decline">Decline</label>
                                 </div>
                                 <div class="form-check form-check-inline">
-                                    <input class="form-check-input" type="radio" name="action" id="request_review" value="REQUEST_REVIEW" required>
+                                    <input class="form-check-input" type="radio" name="action" id="request_review" value="REQUEST_REVIEW" required {% if prescription.status != 'AI_APPROVED' %}checked{% endif %}>
                                     <label class="form-check-label" for="request_review">Request Doctor Review</label>
                                 </div>
                             </div>

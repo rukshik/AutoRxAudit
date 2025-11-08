@@ -1,6 +1,6 @@
 """
-Feature Calculator - Dynamically calculates ML features from raw EHR data.
-Calculates 24 features required by Eligibility (16) and OUD Risk (19) models.
+Feature Extract - Extract features from raw EHR data.
+24 features required by Eligibility (16) and OUD Risk (19) models.
 """
 
 import psycopg2
@@ -24,12 +24,10 @@ OUD_FEATURES = [
     'high_severity_flag', 'n_icu_stays', 'has_bmi'
 ]
 
-
-class FeatureCalculator:
-    """Calculate ML features dynamically from raw EHR data."""
+# Extractor class
+class FeatureExtractor:
     
-    def __init__(self, db_config: Dict[str, str]):
-        """Initialize with database configuration."""
+    def __init__(self, db_config):
         self.db_config = db_config
         self._opioid_drugs = [
             'fentanyl', 'morphine', 'oxycodone', 'hydrocodone', 'hydromorphone',
@@ -37,8 +35,7 @@ class FeatureCalculator:
             'meperidine', 'tapentadol'
         ]
     
-    def calculate_eligibility_features(self, patient_id: str) -> Dict[str, float]:
-        """Calculate 16 features for eligibility model."""
+    def extract_eligibility_features(self, patient_id):
         conn = psycopg2.connect(**self.db_config)
         
         try:
@@ -67,16 +64,8 @@ class FeatureCalculator:
         finally:
             conn.close()
     
-    def calculate_oud_features(self, patient_id: str) -> Dict[str, float]:
-        """Calculate 19 features for OUD risk model.
-        
-        Features MUST match model checkpoint exactly:
-        1. opioid_rx_count, 2. distinct_opioids, 3. opioid_hadms, 4. opioid_exposure_days,
-        5. n_icu_stays, 6. total_icu_hours, 7. age_at_first_admit, 8. n_icu_admissions,
-        9. total_icu_days, 10. avg_drg_mortality, 11. any_opioid_flag, 12. atc_J_rx_count,
-        13. bmi, 14. avg_drg_severity, 15. avg_los_days, 16. max_drg_mortality,
-        17. atc_Other_rx_count, 18. atc_C_rx_count, 19. atc_N_rx_count
-        """
+    def extract_oud_features(self, patient_id):
+
         conn = psycopg2.connect(**self.db_config)
         
         try:
@@ -120,12 +109,9 @@ class FeatureCalculator:
         finally:
             conn.close()
     
-    # =========================================================================
-    # FEATURE CALCULATION METHODS
-    # =========================================================================
     
-    def _get_avg_drg_severity(self, conn, patient_id: str) -> float:
-        """Average DRG severity across all admissions."""
+    # caculuation
+    def _get_avg_drg_severity(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT AVG(drg_severity::float) 
@@ -136,8 +122,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_bmi(self, conn, patient_id: str) -> float:
-        """Most recent BMI value."""
+    def _get_bmi(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT result_value 
@@ -150,8 +135,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result[0]) if result and result[0] else 0.0
     
-    def _get_avg_drg_mortality(self, conn, patient_id: str) -> float:
-        """Average DRG mortality risk across all admissions."""
+    def _get_avg_drg_mortality(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT AVG(drg_mortality::float) 
@@ -162,8 +146,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_max_drg_mortality(self, conn, patient_id: str) -> float:
-        """Maximum DRG mortality risk across all admissions."""
+    def _get_max_drg_mortality(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT MAX(drg_mortality::float) 
@@ -174,8 +157,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result[0]) if result and result[0] else 0.0
     
-    def _get_n_icu_admissions(self, conn, patient_id: str) -> float:
-        """Number of admissions with ICU stay."""
+    def _get_n_icu_admissions(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(DISTINCT admission_id)
@@ -186,8 +168,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_n_icu_stays(self, conn, patient_id: str) -> float:
-        """Total number of ICU stays (transfers to ICU)."""
+    def _get_n_icu_stays(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(*)
@@ -198,8 +179,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_max_drg_severity(self, conn, patient_id: str) -> float:
-        """Maximum DRG severity across all admissions."""
+    def _get_max_drg_severity(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT MAX(drg_severity)
@@ -210,13 +190,11 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_high_severity_flag(self, conn, patient_id: str) -> float:
-        """Flag if any admission has DRG severity >= 3."""
+    def _get_high_severity_flag(self, conn, patient_id):
         max_severity = self._get_max_drg_severity(conn, patient_id)
         return 1.0 if max_severity >= 3 else 0.0
     
-    def _get_total_icu_hours(self, conn, patient_id: str) -> float:
-        """Total hours spent in ICU."""
+    def _get_total_icu_hours(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COALESCE(SUM(los_hours), 0)
@@ -227,20 +205,16 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_obesity_flag(self, conn, patient_id: str) -> float:
-        """Flag if BMI >= 30."""
+    def _get_obesity_flag(self, conn, patient_id):
         bmi = self._get_bmi(conn, patient_id)
         return 1.0 if bmi >= 30 else 0.0
     
-    def _get_total_icu_days(self, conn, patient_id: str) -> float:
-        """Total days spent in ICU."""
+    def _get_total_icu_days(self, conn, patient_id):
         total_hours = self._get_total_icu_hours(conn, patient_id)
         return total_hours / 24.0
     
-    def _get_atc_rx_count(self, conn, patient_id: str, atc_category: str) -> float:
-        """Count prescriptions by ATC category using drug name pattern matching.
-        This matches the feature extraction logic in shap_feature_selection.py"""
-        
+    def _get_atc_rx_count(self, conn, patient_id, atc_category):
+
         # ATC mapping patterns (same as training)
         atc_patterns = {
             'A': ['insulin', 'metformin', 'glipizide', 'lantus', 'proton pump inhibitor', 'prazole', 'omeprazole'],
@@ -303,10 +277,8 @@ class FeatureCalculator:
         
         return float(count)
     
-    def _get_atc_other_rx_count(self, conn, patient_id: str) -> float:
-        """Count prescriptions that don't map to ATC categories A, B, C, H, J, N, R.
-        This matches the feature extraction logic in shap_feature_selection.py"""
-        
+    def _get_atc_other_rx_count(self, conn, patient_id):
+          
         # ATC mapping patterns (same as training)
         atc_patterns = {
             'A': ['insulin', 'metformin', 'glipizide', 'lantus', 'proton pump inhibitor', 'prazole', 'omeprazole'],
@@ -369,8 +341,7 @@ class FeatureCalculator:
         
         return float(other_count)
     
-    def _get_n_admissions_with_drg(self, conn, patient_id: str) -> float:
-        """Number of admissions with DRG code assigned."""
+    def _get_n_admissions_with_drg(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(DISTINCT admission_id)
@@ -381,8 +352,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_n_hospital_admits(self, conn, patient_id: str) -> float:
-        """Total number of hospital admissions."""
+    def _get_n_hospital_admits(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COUNT(*)
@@ -393,8 +363,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_avg_los_days(self, conn, patient_id: str) -> float:
-        """Average length of stay in days across all admissions."""
+    def _get_avg_los_days(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT AVG(EXTRACT(EPOCH FROM (discharge_time - admit_time)) / 86400)
@@ -405,8 +374,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_total_los_days(self, conn, patient_id: str) -> float:
-        """Total length of stay in days across all admissions."""
+    def _get_total_los_days(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (discharge_time - admit_time)) / 86400), 0)
@@ -417,15 +385,13 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_has_bmi(self, conn, patient_id: str) -> float:
-        """Flag if patient has BMI recorded."""
+    def _get_has_bmi(self, conn, patient_id):
         bmi = self._get_bmi(conn, patient_id)
         return 1.0 if bmi > 0 else 0.0
     
     # OUD-specific features
     
-    def _get_opioid_rx_count(self, conn, patient_id: str) -> float:
-        """Count of opioid prescriptions."""
+    def _get_opioid_rx_count(self, conn, patient_id):
         cursor = conn.cursor()
         opioid_pattern = '|'.join(self._opioid_drugs)
         cursor.execute("""
@@ -438,8 +404,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_distinct_opioids(self, conn, patient_id: str) -> float:
-        """Number of distinct opioid drugs prescribed."""
+    def _get_distinct_opioids(self, conn, patient_id):
         cursor = conn.cursor()
         opioid_pattern = '|'.join(self._opioid_drugs)
         cursor.execute("""
@@ -452,8 +417,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_opioid_exposure_days(self, conn, patient_id: str) -> float:
-        """Total days of opioid exposure."""
+    def _get_opioid_exposure_days(self, conn, patient_id):
         cursor = conn.cursor()
         opioid_pattern = '|'.join(self._opioid_drugs)
         cursor.execute("""
@@ -467,8 +431,7 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_opioid_hadms(self, conn, patient_id: str) -> float:
-        """Number of admissions with opioid prescriptions."""
+    def _get_opioid_hadms(self, conn, patient_id):
         cursor = conn.cursor()
         opioid_pattern = '|'.join(self._opioid_drugs)
         cursor.execute("""
@@ -482,13 +445,11 @@ class FeatureCalculator:
         cursor.close()
         return float(result) if result else 0.0
     
-    def _get_any_opioid_flag(self, conn, patient_id: str) -> float:
-        """Flag if patient has any opioid prescription."""
+    def _get_any_opioid_flag(self, conn, patient_id):
         opioid_count = self._get_opioid_rx_count(conn, patient_id)
         return 1.0 if opioid_count > 0 else 0.0
     
-    def _get_age_at_first_admit(self, conn, patient_id: str) -> float:
-        """Patient age at first admission (approximate)."""
+    def _get_age_at_first_admit(self, conn, patient_id):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
