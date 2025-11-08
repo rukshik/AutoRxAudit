@@ -241,6 +241,37 @@ async def process_prescription_ai_check(prescription_id: int, patient_id: int, d
         
         drug_name_lower = drug_name.lower()
         is_opioid = any(keyword in drug_name_lower for keyword in opioid_keywords)
+
+        if not is_opioid:
+            # Non-opioid prescriptions are automatically approved
+            db_execute("""
+                INSERT INTO prescription_review (
+                            prescription_id, eligibility_score, eligibility_prediction,
+                            oud_risk_score, oud_risk_prediction,
+                            flagged, flag_reason, recommendation
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (
+                        prescription_id, 1.0, 1,
+                        0.0, 0,
+                        False, "Non-opioid prescription", "AI APPROVED: Non-opioid prescription"
+                    ))
+            #update prescription status
+            db_execute("""
+                UPDATE prescription_requests
+                SET status = 'AI_APPROVED'
+                WHERE prescription_id = %s
+            """, (prescription_id,))
+            
+            await blockchain_transaction(f"/pharmacy/ai-review", {
+                "prescription_uuid": prescription_uuid,
+                "flagged": False,
+                "eligibility_score": 100,
+                "oud_risk_score": 0,
+                "flag_reason": "Non-opioid prescription",
+                "recommendation": "AI APPROVED: Non-opioid prescription"
+            })
+            return
         
         # Initialize feature extractor
         extractor = FeatureExtractor(DB_CONFIG)
@@ -690,8 +721,9 @@ def prescription_detail_page(request: Request, prescription_id: int, user_id: Op
                                 (prescription['prescription_uuid'],))
     
     # Determine if prescription can be edited
-    # Can edit if status is AI_APPROVED, AI_FLAGGED, AI_ERROR, or UNDER_REVIEW (after doctor responds)
+    # Can edit if status is AI_APPROVED, AI_FLAGGED, AI_ERROR, or UNDER_REVIEW
     can_edit = prescription['status'] in ['AI_APPROVED', 'AI_FLAGGED', 'AI_ERROR', 'UNDER_REVIEW']
+    print(f"Can edit prescription {prescription_id}: {can_edit} (status={prescription['status']})")
     
     return templates.TemplateResponse("prescription_detail.html", {
         "request": request,

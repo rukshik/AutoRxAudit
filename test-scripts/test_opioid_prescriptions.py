@@ -200,13 +200,12 @@ def get_ai_results() -> List[Dict]:
             prv.reviewed_by,
             prv.action,
             prv.action_reason,
-            prv.created_at as review_created_at,
             prv.reviewed_at
         FROM prescription_requests pr
         LEFT JOIN prescription_review prv ON pr.prescription_id = prv.prescription_id
         LEFT JOIN patients p ON pr.patient_id = p.patient_id
         WHERE pr.prescribed_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour'
-        ORDER BY pr.prescribed_at DESC
+        ORDER BY pr.prescribed_at DESC LIMIT 490
     """)
     
     results = cursor.fetchall()
@@ -334,7 +333,7 @@ def main():
     
     try:
         # Step 1: Get all patients
-        patients = get_all_patients()
+        #patients = get_all_patients()
         
         if not patients:
             print("No patients found in database. Exiting.")
@@ -344,10 +343,10 @@ def main():
         # patients = patients[:10]  # Uncomment to test with first 10 patients only
         
         # Step 2: Send prescriptions
-        prescription_results = send_all_prescriptions(patients)
+        #prescription_results = send_all_prescriptions(patients)
         
         # Step 3: Wait for AI processing
-        wait_for_ai_processing(wait_seconds=45)  # Adjust wait time as needed
+        #wait_for_ai_processing(wait_seconds=45)  # Adjust wait time as needed
         
         # Step 4: Get AI results
         ai_results = get_ai_results()
