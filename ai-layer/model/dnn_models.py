@@ -244,16 +244,14 @@ def evaluate_test_set(model, test_loader, device):
 def train_single_model(train_df, val_df, test_df, target, feature_cols, 
                        model_name, output_dir, device):
     
-    print(f"TRAINING DNN: {model_name}")
-
-    # Prepare data - encode categorical variables
+    # Prepare data - encode string variables
     from sklearn.preprocessing import LabelEncoder
     
     train_df_encoded = train_df[feature_cols].copy()
     val_df_encoded = val_df[feature_cols].copy()
     test_df_encoded = test_df[feature_cols].copy()
     
-    # Encode categorical columns (like 'insurance')
+    # Encode string columns (like 'insurance')
     label_encoders = {}
     for col in feature_cols:
         if train_df_encoded[col].dtype == 'object':
@@ -269,8 +267,8 @@ def train_single_model(train_df, val_df, test_df, target, feature_cols,
     y_val = val_df[target].values
     X_test = test_df_encoded.values
     y_test = test_df[target].values
-    
-    # Standardize features
+
+    # Standardize features. To keep all the features have similar ranges. Scales the features to have mean=0 and standard deviation=1
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
@@ -285,30 +283,14 @@ def train_single_model(train_df, val_df, test_df, target, feature_cols,
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
     
-    # Calculate class weights for imbalanced data
-    class_counts = np.bincount(y_train.astype(int))
-    total = len(y_train)
-    weight_for_0 = total / (2 * class_counts[0])
-    weight_for_1 = total / (2 * class_counts[1])   
-    
     # Create model
     input_dim = len(feature_cols)
     model = DeepNet(input_dim=input_dim, hidden_dims=[128, 64, 32, 16], dropout_rate=0.3)
     model = model.to(device)
  
-    # Loss and optimizer
-    raw_pos_weight = weight_for_1 / weight_for_0
-    pos_weight = torch.tensor([min(raw_pos_weight, 10.0)]).to(device)  # Cap at 10x
-    
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)  # More stable than BCELoss
-    
-    # Use lower learning rate for stability with extreme class imbalance (in OUD case as postive cases are too few)
-    lr = 0.0001 if raw_pos_weight > 5.0 else 0.001
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    
     # Train
     trained_model, best_val_auc = train_model_with_early_stopping(
-        model, train_loader, val_loader, criterion, optimizer, device,
+        model, train_loader, val_loader, None, None, device,
         num_epochs=100, patience=15
     )
 
